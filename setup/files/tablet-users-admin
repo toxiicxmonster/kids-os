@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Kids OS accounts: the privileged half of the parent's Users app (run through
+pkexec, see org.kidsos.users.policy) and the login-screen sync.
+
+  tablet-users-admin list                  people as JSON (parent first)
+  tablet-users-admin rename <user> <name>  the name shown on the login screen
+  tablet-users-admin add-kid <name>        a new kid with their own tablet
+  tablet-users-admin remove-kid <user>     (not the first kid)
+  tablet-users-admin set-password          parent's new password, from stdin
+  tablet-users-admin sync                  login screen: who's listed, timed
+                                           login, each kid's picture
+
+Every kid is a password-less account in the kidsos-kids group with the kiosk
+session and their own Android (apps, game progress, theme): the first kid's
+lives in /var/lib/tablet-os/android-data, each later one in
+/var/lib/tablet-os/android-data-<user>, copied from the first kid's when
+added (same apps and Google sign-in).
+"""
+import grp
+import json
+import os
+import pathlib
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+KIDS_GROUP = "kidsos-kids"
+CONF = pathlib.Path("/etc/tablet-os/update.conf")  # has PARENT_USER
+SHARED = pathlib.Path("/var/lib/tablet-os/android-data")
+THEMES_SVG = pathlib.Path("/usr/share/tablet-os/themes")
+BRIDGE_CONFIG = pathlib.Path("/var/lib/tablet-movies/config.json")
+GDM_CONF = pathlib.Path("/etc/gdm3/custom.conf")
+GDM_RESTART_PENDING = pathlib.Path("/var/lib/tablet-os/gdm-restart-pending")
+ICONS = pathlib.Path("/var/lib/AccountsService/icons")
+NAME_RE = re.compile(r"[^\x00-\x1f:,=\\]{1,40}")
+
+
+def run(*args, **kw):
+    return subprocess.run(args, check=True, text=True, **kw)
+
+
+def parent_user():
+    for line in CONF.read_text().splitlines():
+        if line.startswith("PARENT_USER="):
+            return line.split("=", 1)[1].strip().strip('"')
+    return "parent"
+
+
+def kids():
+    """Kid accounts, oldest first (the first one is the original kid)."""
+    try:
+        members = grp.getgrnam(KIDS_GROUP).gr_mem
+    except KeyError:
+        return []
+    return sorted((pwd.getpwnam(m) for m in members), key=lambda p: p.pw_uid)
+
+
+def display_name(p):
+    return (p.pw_gecos.split(",")[0] or p.pw_name).strip()
+
+
+def data_dir(user, first):
+    return SHARED if user == first else SHARED.with_name(f"android-data-{user}")
+
+
+def check_name(name):
+    name = name.strip()
+    if not NAME_RE.fullmatch(name):
+        raise SystemExit("names can't be empty or use : , = or \\")
+    return name
+
+
+def accounts_call(user, method, value):
+    uid = pwd.getpwnam(user).pw_uid
+    run("busctl", "call", "org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{uid}",
+        "org.freedesktop.Accounts.User", method, "s", value, stdout=subprocess.DEVNULL)
+
+
+def themes():
+    try:
+        return json.loads(BRIDGE_CONFIG.read_text()).get("themes", {})
+    except (OSError, ValueError):
+        return {}
+
+
+# ---- commands ------------------------------------------------------------------------
+
+def cmd_list():
+    parent = pwd.getpwnam(parent_user())
+    chosen = themes()
+    people = [{"user": parent.pw_name, "name": display_name(parent), "role": "parent",
+               "theme": chosen.get(parent.pw_name, "sky")}]
+    for i, p in enumerate(kids()):
+        people.append({"user": p.pw_name, "name": display_name(p), "role": "kid", "first": i == 0,
+                       "theme": chosen.get(p.pw_name, "sky")})
+    print(json.dumps(people))
+
+
+def cmd_rename(user, name):
+    name = check_name(name)
+    if user != parent_user() and user not in [p.pw_name for p in kids()]:
+        raise SystemExit("no such person")
+    run("usermod", "-c", name, user)
+    accounts_call(user, "SetRealName", name)
+    sync()
+
+
+def copy_android(target):
+    """A copy of the first kid's Android data. Android mustn't change it while
+    it's copied, and a logged-in kid's session restarts a stopped Android at
+    once, so the whole container is stopped for the copy (then started again)."""
+    subprocess.run(["systemctl", "stop", "waydroid-container"], capture_output=True)
+    tmp = target.with_name(target.name + ".copying")
+    try:
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        print("copying the tablet (about a minute)...", file=sys.stderr, flush=True)
+        run("cp", "-a", "--sparse=always", str(SHARED), str(tmp))
+        tmp.rename(target)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    finally:
+        subprocess.run(["systemctl", "start", "waydroid-container"], capture_output=True)
+
+
+def cmd_add_kid(name):
+    name = check_name(name)
+    existing = {p.pw_name for p in pwd.getpwall()}
+    user = next(f"kid{n}" for n in range(2, 100) if f"kid{n}" not in existing)
+    current = kids()
+    if not current:
+        raise SystemExit("there's no first kid to copy the tablet from")
+
+    # Their own tablet first (a copy of the first kid's Android), so a failed
+    # copy leaves no half-made account behind.
+    target = data_dir(user, current[0].pw_name)
+    if not target.exists():
+        copy_android(target)
+    run("adduser", "--disabled-password", "--gecos", name, user, stdout=subprocess.DEVNULL)
+    setup_kid(user)
+    link_android(user, target)
+    sync()
+    print(json.dumps({"user": user, "name": name}))
+
+
+def setup_kid(user):
+    """What every kid account gets (also re-applied by sync)."""
+    run("passwd", "-d", user, stdout=subprocess.DEVNULL)  # a tap logs them in
+    run("usermod", "-aG", KIDS_GROUP, user)
+    for g in ("sudo", "adm", "lpadmin", "netdev"):
+        subprocess.run(["gpasswd", "-d", user, g], capture_output=True)
+    home = pathlib.Path(pwd.getpwnam(user).pw_dir)
+    home.chmod(0o750)
+    accounts = pathlib.Path(f"/var/lib/AccountsService/users/{user}")
+    accounts.parent.mkdir(parents=True, exist_ok=True)
+    text = accounts.read_text() if accounts.exists() else "[User]\n"
+    for key, value in (("Session", "tablet-kiosk"), ("SystemAccount", "false")):
+        if re.search(f"^{key}=", text, re.M):
+            text = re.sub(f"^{key}=.*$", f"{key}={value}", text, flags=re.M)
+        else:
+            text += f"{key}={value}\n"
+    accounts.write_text(text)
+
+
+def link_android(user, target):
+    p = pwd.getpwnam(user)
+    waydroid = pathlib.Path(p.pw_dir, ".local/share/waydroid")
+    for d in (waydroid.parent.parent, waydroid.parent, waydroid):
+        d.mkdir(exist_ok=True)
+        os.chown(d, p.pw_uid, p.pw_gid)
+    link = waydroid / "data"
+    if link.is_symlink() or not link.exists():
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(target)
+        os.lchown(link, p.pw_uid, p.pw_gid)
+
+
+def cmd_remove_kid(user):
+    current = kids()
+    names = [p.pw_name for p in current]
+    if user not in names:
+        raise SystemExit("no such kid")
+    if user == names[0]:
+        raise SystemExit("the first kid can't be removed (rename them instead)")
+    sessions = subprocess.run(["loginctl", "list-sessions", "--no-legend"], capture_output=True, text=True).stdout
+    if any(line.split()[2:3] == [user] for line in sessions.splitlines()):
+        raise SystemExit(f"{user} is logged in")
+    # Their background processes (systemd --user, sound) outlive the session for
+    # a while, and deluser refuses while any are left.
+    uid = pwd.getpwnam(user).pw_uid
+    subprocess.run(["loginctl", "terminate-user", user], capture_output=True)
+    subprocess.run(["systemctl", "stop", f"user@{uid}.service"], capture_output=True)
+    subprocess.run(["pkill", "-KILL", "-u", user], capture_output=True)
+    time.sleep(1)
+    run("deluser", "--remove-home", user, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    target = data_dir(user, names[0])
+    if target != SHARED and target.exists():
+        shutil.rmtree(target)
+    (ICONS / user).unlink(missing_ok=True)
+    pathlib.Path(f"/var/lib/AccountsService/users/{user}").unlink(missing_ok=True)
+    sync()
+
+
+def cmd_set_password():
+    password = sys.stdin.readline().rstrip("\n")
+    if len(password) < 4:
+        raise SystemExit("the password must be at least 4 characters")
+    run("chpasswd", input=f"{parent_user()}:{password}\n")
+
+
+# ---- login screen ---------------------------------------------------------------------
+
+def avatar(user, name, theme):
+    """The kid's picture on the login screen: their theme with the first letter of their name."""
+    svg = THEMES_SVG / f"{theme}.svg"
+    if not svg.exists():
+        svg = THEMES_SVG / "sky.svg"
+    with tempfile.TemporaryDirectory() as tmp:
+        png = pathlib.Path(tmp, "bg.png")
+        run("rsvg-convert", "-w", "480", "-h", "270", str(svg), "-o", str(png))
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.open(png).convert("RGB").crop((105, 0, 375, 270)).resize((256, 256))
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf", 150)
+        except OSError:
+            font = ImageFont.load_default()
+        letter = (name[:1] or user[:1]).upper()
+        draw.text((128, 132), letter, font=font, anchor="mm", fill="white", stroke_width=10, stroke_fill="#0d47a1")
+        out = ICONS / user
+        ICONS.mkdir(parents=True, exist_ok=True)
+        tmp_out = pathlib.Path(tmp, "avatar.png")
+        img.save(tmp_out, "PNG")
+        if not out.exists() or out.read_bytes() != tmp_out.read_bytes():
+            accounts_call(user, "SetIconFile", str(tmp_out))
+
+
+def sync():
+    """Login screen to match the kids: with one kid, timed login straight into
+    their tablet (as before); with several, the list of kids to tap. Plus each
+    kid's picture, set up account and Android link."""
+    current = kids()
+    chosen = themes()
+    for i, p in enumerate(current):
+        try:  # one broken account (e.g. no home folder) mustn't stop the rest
+            setup_kid(p.pw_name)
+            link_android(p.pw_name, data_dir(p.pw_name, current[0].pw_name))
+            avatar(p.pw_name, display_name(p), chosen.get(p.pw_name, "sky"))
+        except Exception as e:
+            print(f"kid {p.pw_name}: {e!r}", file=sys.stderr)
+
+    timed = current[0].pw_name if len(current) == 1 else None
+    text = GDM_CONF.read_text() if GDM_CONF.exists() else "[daemon]\n"
+    new = re.sub(r"^TimedLoginEnable=.*$", f"TimedLoginEnable={'true' if timed else 'false'}", text, flags=re.M)
+    new = re.sub(r"^TimedLogin=.*$", f"TimedLogin={timed or current[0].pw_name if current else ''}", new, flags=re.M)
+    if new != text:
+        GDM_CONF.write_text(new)
+        # GDM reads it at start; restarting it would end sessions, so the
+        # parent switch restarts it once nobody's on the screen.
+        GDM_RESTART_PENDING.parent.mkdir(parents=True, exist_ok=True)
+        GDM_RESTART_PENDING.touch()
+
+
+def main():
+    if os.geteuid() != 0:
+        raise SystemExit("run as root (the Users app uses pkexec)")
+    args = sys.argv[1:]
+    commands = {"list": (cmd_list, 0), "rename": (cmd_rename, 2), "add-kid": (cmd_add_kid, 1),
+                "remove-kid": (cmd_remove_kid, 1), "set-password": (cmd_set_password, 0), "sync": (sync, 0)}
+    if not args or args[0] not in commands or len(args) - 1 != commands[args[0]][1]:
+        raise SystemExit(__doc__)
+    try:
+        commands[args[0]][0](*args[1:])
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(f"{' '.join(e.cmd[:2])} failed")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Kids OS Users app: pkexec tablet-users-admin. Asks for the parent's
+     password, then remembers it for a few minutes. -->
+<policyconfig>
+  <action id="org.kidsos.users">
+    <description>Change the people on Kids OS</description>
+    <message>Enter the parent password to change names, kids or the password</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/sbin/tablet-users-admin</annotate>
+  </action>
+</policyconfig>

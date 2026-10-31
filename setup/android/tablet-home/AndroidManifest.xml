@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tablet Home: the kid's carousel launcher and the parent's app picker. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.tabletos.home"
+    android:versionCode="18"
+    android:versionName="1.17">
+
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- The kid's theme is kept by the Movies & TV bridge on the host. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The floating home button shown over other apps. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <application
+        android:label="Tablet Home"
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar.Fullscreen">
+
+        <activity
+            android:name=".HomeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:stateNotNeeded="true"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Screen sleep from the host after a while without a touch (shell/system only). -->
+        <receiver
+            android:name=".ScreenReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
+        <!-- Kid volume from the parents' web portal (via the host; shell/system only). -->
+        <receiver
+            android:name=".VolumeReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
+        <receiver
+            android:name=".AdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

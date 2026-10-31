@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Runs at each parent desktop login (GNOME autostart): puts the "Kid Tablet
+# (parent mode)" and "Back to Kids OS" launchers on the desktop, marks them
+# trusted so they open with a double-click, and pins them to the dock. Trust can
+# only be set from inside the user's own session.
+[[ "$(id -un)" == "${TABLET_PARENT_USER:-parent}" ]] || exit 0
+
+apps=(tablet-parent-android.desktop tablet-users.desktop tablet-parent-logout.desktop)
+
+desktop="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
+mkdir -p "$desktop"
+for app in "${apps[@]}"; do
+  install -m 755 "/usr/share/applications/$app" "$desktop/$app"
+  gio set "$desktop/$app" metadata::trusted true
+done
+
+# Pin to the dock (once each; the parent can unpin and it stays unpinned).
+pinned="$HOME/.config/tablet-os/pinned"
+mkdir -p "$(dirname "$pinned")"
+favorites="$(gsettings get org.gnome.shell favorite-apps)"
+for app in "${apps[@]}"; do
+  grep -qx "$app" "$pinned" 2>/dev/null && continue
+  if [[ $favorites != *"'$app'"* ]]; then
+    favorites="${favorites%]}, '$app']"
+    favorites="${favorites/\[, /[}"
+  fi
+  echo "$app" >> "$pinned"
+done
+gsettings set org.gnome.shell favorite-apps "$favorites"

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Users
+Comment=Names, kids, themes and the parent password for Kids OS
+Exec=/usr/local/bin/tablet-users
+Icon=system-users
+Terminal=false
+Categories=Settings;

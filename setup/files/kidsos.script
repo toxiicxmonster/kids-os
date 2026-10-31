@@ -1,0 +1,45 @@
+# Kids OS boot splash (Plymouth script theme): the cartoon sky with the Kids OS
+# title, covering the screen, and a status line near the bottom for messages
+# such as "Updating Kids OS... please wait" (plymouth display-message).
+
+splash = Image("splash.png");
+background = Sprite();
+background.SetZ(-100);
+status = Sprite();
+status.SetZ(10);
+status_text = "";
+laid_out_width = 0;
+laid_out_height = 0;
+
+# Cover the screen without stretching: scale evenly, centre, let edges crop.
+# Re-done whenever the screen size changes (the firmware's boot mode, e.g.
+# 1024x768, switches to the monitor's native mode partway through boot).
+fun layout() {
+  width = Window.GetWidth();
+  height = Window.GetHeight();
+  if (width == laid_out_width && height == laid_out_height) return;
+  laid_out_width = width;
+  laid_out_height = height;
+  scale = Math.Max(width / splash.GetWidth(), height / splash.GetHeight());
+  scaled = splash.Scale(splash.GetWidth() * scale, splash.GetHeight() * scale);
+  background.SetImage(scaled);
+  background.SetX(width / 2 - scaled.GetWidth() / 2);
+  background.SetY(height / 2 - scaled.GetHeight() / 2);
+  place_status();
+}
+
+fun place_status() {
+  label = Image.Text(status_text, 0.05, 0.28, 0.63, 1, "Sans Bold 26");
+  status.SetImage(label);
+  status.SetX(Window.GetWidth() / 2 - label.GetWidth() / 2);
+  status.SetY(Window.GetHeight() * 0.84);
+}
+
+fun show_message(text) {
+  status_text = text;
+  place_status();
+}
+
+layout();
+Plymouth.SetRefreshFunction(layout);
+Plymouth.SetMessageFunction(show_message);

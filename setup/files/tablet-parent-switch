@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Hidden parent exit, for a touch-only box (a keyboard is optional).
+
+Either of these ends the kid's session so GDM shows its login screen, where the
+parent signs in with the on-screen keyboard. GDM's timed login puts the kid
+back into Android if nobody signs in.
+
+  * Touch: tap the four screen corners in order, top-left, top-right,
+    bottom-right, bottom-left, within CORNER_WINDOW seconds.
+  * Keyboard: hold Ctrl+Alt+Shift+P for HOLD_SECONDS.
+
+Runs as root and only reads input devices (never grabs them), so Android still
+gets every touch and the gesture works whatever Android is showing. Only direct
+touchscreens count, so a mouse or touchpad can't trigger the corner gesture.
+"""
+import asyncio
+import glob
+import grp
+import json
+import os
+import pwd
+import signal
+import subprocess
+import time
+
+import evdev
+from evdev import ecodes
+
+KID_USER = os.environ.get("KID_USER", "kid")
+KIDS_GROUP = "kidsos-kids"  # every kid account (the Users app can add more)
+GDM_RESTART_PENDING = "/var/lib/tablet-os/gdm-restart-pending"
+# Screen sleep: the kid's screen goes dark after this long without a touch
+# (unless Android is playing sound: a video or a song). 0 turns it off.
+IDLE_SECONDS = int(os.environ.get("TABLET_IDLE_MINUTES", "10")) * 60
+# VM testing: also treat absolute pointers (VirtualBox mouse integration) as touch.
+POINTERS = os.environ.get("TABLET_SWITCH_POINTERS") == "1"
+RESCAN_SECONDS = 10
+HOLD_SECONDS = 2.0
+CORNER_WINDOW = 6.0
+CORNER_SIZE = 0.12  # fraction of the screen's width/height that counts as a corner
+CORNER_SEQUENCE = ["tl", "tr", "br", "bl"]
+COMBO = {
+    frozenset({ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL}),
+    frozenset({ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT}),
+    frozenset({ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT}),
+    frozenset({ecodes.KEY_P}),
+}
+
+
+def kid_users():
+    try:
+        return set(grp.getgrnam(KIDS_GROUP).gr_mem) | {KID_USER}
+    except KeyError:
+        return {KID_USER}
+
+
+def end_kid_session(reason):
+    """Stop everything in the kids' graphical sessions except GDM's session worker.
+
+    `loginctl terminate-user` would also kill the worker, and then GDM never
+    notices the session ended and never brings the login screen back.
+    """
+    for user in sorted(kid_users()):
+        try:
+            end_sessions_of(user, reason)
+        except KeyError:
+            pass
+
+
+def end_sessions_of(user, reason):
+    uid = pwd.getpwnam(user).pw_uid
+    slice_dir = f"/sys/fs/cgroup/user.slice/user-{uid}.slice"
+    scopes = glob.glob(f"{slice_dir}/session-*.scope")
+    if scopes:
+        print(f"parent switch ({reason}): ending {user}'s sessions", flush=True)
+    for scope in scopes:
+        with open(f"{scope}/cgroup.procs") as procs:
+            for pid in (int(p) for p in procs.read().split()):
+                try:
+                    with open(f"/proc/{pid}/comm") as comm:
+                        if comm.read().strip().startswith("gdm-session-wor"):
+                            continue
+                    os.kill(pid, signal.SIGTERM)
+                except (FileNotFoundError, ProcessLookupError):
+                    pass
+
+
+async def watch_keyboard(dev):
+    held = set()
+    combo_since = None
+    async for ev in dev.async_read_loop():
+        if ev.type != ecodes.EV_KEY:
+            continue
+        if ev.value == 1:
+            touched()
+            held.add(ev.code)
+        elif ev.value == 0:
+            held.discard(ev.code)
+        if all(held & keys for keys in COMBO):
+            if combo_since is None:
+                combo_since = time.monotonic()
+            elif time.monotonic() - combo_since >= HOLD_SECONDS:
+                combo_since = None
+                held.clear()
+                end_kid_session("key combo")
+        else:
+            combo_since = None
+
+
+def corner_of(fx, fy):
+    horiz = "l" if fx <= CORNER_SIZE else "r" if fx >= 1 - CORNER_SIZE else None
+    vert = "t" if fy <= CORNER_SIZE else "b" if fy >= 1 - CORNER_SIZE else None
+    return vert + horiz if horiz and vert else None
+
+
+# Shared across devices: in a VM the pointer position and the click can come
+# from different virtual devices. A real touchscreen reports both itself.
+last_pos = [0.5, 0.5]  # latest position, as fractions of the screen
+taps = []  # (time, corner) of recent touch-downs
+
+
+def on_press():
+    global taps
+    now = time.monotonic()
+    corner = corner_of(*last_pos)
+    if corner is None:
+        taps.clear()
+        return
+    taps = [t for t in taps if now - t[0] <= CORNER_WINDOW]
+    taps.append((now, corner))
+    seq = [c for _, c in taps]
+    # Keep only the longest tail that is a prefix of the sequence.
+    while seq and seq != CORNER_SEQUENCE[: len(seq)]:
+        taps.pop(0)
+        seq.pop(0)
+    if seq == CORNER_SEQUENCE:
+        taps.clear()
+        end_kid_session("corner taps")
+
+
+# ---- screen sleep ---------------------------------------------------------------
+
+screen = {"dark": False, "last": time.monotonic()}
+
+
+def kid_on_screen():
+    """(user, uid) of the kid whose session is active on the screen, if any."""
+    out = subprocess.run(["loginctl", "list-sessions", "--no-legend"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] in kid_users():
+            # (loginctl prints properties in its own order, so read them by name)
+            props = dict(line.split("=", 1) for line in subprocess.run(
+                ["loginctl", "show-session", fields[0], "-p", "Active", "-p", "Seat"],
+                capture_output=True, text=True).stdout.splitlines() if "=" in line)
+            if props.get("Active") == "yes" and props.get("Seat") == "seat0":
+                return fields[2], int(fields[1])
+    return None
+
+
+def sound_playing(kid):
+    """Android is playing sound (it only keeps a stream open while it does)."""
+    user, uid = kid
+    try:
+        streams = json.loads(subprocess.run(
+            ["runuser", "-u", user, "--", "env", f"XDG_RUNTIME_DIR=/run/user/{uid}",
+             "pactl", "-f", "json", "list", "sink-inputs"], capture_output=True, text=True, timeout=10).stdout or "[]")
+    except (ValueError, subprocess.SubprocessError):
+        return True  # can't tell: keep the screen on
+    return any(not s.get("corked", False) for s in streams)
+
+
+def go_dark():
+    """Tablet Home fades the screen to black; the next touch only brings it back.
+    (Cage, the kiosk compositor, can't switch the monitor itself off.)"""
+    result = subprocess.run(["waydroid", "shell", "--", "am", "broadcast", "-n",
+                             "org.tabletos.home/.ScreenReceiver"], capture_output=True, text=True, timeout=30)
+    screen["dark"] = result.returncode == 0
+    print("screen dark (idle)" if screen["dark"] else f"screen sleep failed: {result.stderr.strip()}", flush=True)
+
+
+def touched():
+    """Any touch or key (one on a dark screen only wakes it: Tablet Home eats it)."""
+    screen["last"] = time.monotonic()
+    if screen["dark"]:
+        screen["dark"] = False
+        return True
+    return False
+
+
+async def sleep_when_idle():
+    while IDLE_SECONDS:
+        await asyncio.sleep(15)
+        if screen["dark"] or time.monotonic() - screen["last"] < IDLE_SECONDS:
+            continue
+        kid = kid_on_screen()
+        if kid and not sound_playing(kid):
+            await asyncio.get_running_loop().run_in_executor(None, go_dark)
+        screen["last"] = time.monotonic()  # (look again after another idle stretch)
+
+
+async def watch_touch(dev):
+    abs_caps = dict(dev.capabilities(absinfo=True).get(ecodes.EV_ABS, []))
+    multitouch = ecodes.ABS_MT_POSITION_X in abs_caps
+    x_code = ecodes.ABS_MT_POSITION_X if multitouch else ecodes.ABS_X
+    y_code = ecodes.ABS_MT_POSITION_Y if multitouch else ecodes.ABS_Y
+    xinfo, yinfo = abs_caps.get(x_code), abs_caps.get(y_code)
+    press = ecodes.BTN_TOUCH if ecodes.BTN_TOUCH in dev.capabilities()[ecodes.EV_KEY] else ecodes.BTN_LEFT
+
+    pressed = False
+    async for ev in dev.async_read_loop():
+        if ev.type == ecodes.EV_KEY and ev.code == press and ev.value == 1 and touched():
+            continue  # this touch only woke the screen (no corner tap)
+        if ev.type == ecodes.EV_ABS and ev.code == x_code and xinfo:
+            last_pos[0] = (ev.value - xinfo.min) / max(1, xinfo.max - xinfo.min)
+        elif ev.type == ecodes.EV_ABS and ev.code == y_code and yinfo:
+            last_pos[1] = (ev.value - yinfo.min) / max(1, yinfo.max - yinfo.min)
+        elif ev.type == ecodes.EV_KEY and ev.code == press and ev.value == 1:
+            pressed = True
+        elif ev.type == ecodes.EV_SYN and ev.code == ecodes.SYN_REPORT and pressed:
+            # Classify after the whole report, so this touch's own position is in.
+            pressed = False
+            on_press()
+
+
+def input_devices():
+    for path in evdev.list_devices():
+        dev = evdev.InputDevice(path)
+        caps = dev.capabilities()
+        keys = caps.get(ecodes.EV_KEY, [])
+        absolute = ecodes.EV_ABS in caps
+        if absolute and ecodes.BTN_TOUCH in keys and ecodes.INPUT_PROP_DIRECT in dev.input_props():
+            yield "touch", dev
+        elif POINTERS and ecodes.BTN_LEFT in keys:
+            # VM only: absolute pointers give the position, any mouse the click.
+            yield "touch", dev
+        elif ecodes.KEY_P in keys and ecodes.KEY_LEFTCTRL in keys:
+            yield "keyboard", dev
+
+
+async def watch_hotplug(known):
+    # Exit when devices come or go (e.g. a keyboard is plugged in); systemd
+    # restarts us and we rescan.
+    while True:
+        await asyncio.sleep(RESCAN_SECONDS)
+        if set(evdev.list_devices()) != known:
+            raise SystemExit("input devices changed, rescanning")
+
+
+def screen_in_use():
+    out = subprocess.run(["loginctl", "list-sessions", "--no-legend"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        props = dict(kv.split("=", 1) for kv in subprocess.run(
+            ["loginctl", "show-session", line.split()[0], "-p", "Type", "-p", "Class"],
+            capture_output=True, text=True).stdout.splitlines() if "=" in kv)
+        if props.get("Type") in ("wayland", "x11") and props.get("Class") == "user":
+            return True
+    return False
+
+
+async def restart_gdm_when_free():
+    """The Users app changed who's on the login screen (or timed login): GDM
+    reads that at start, and restarting it ends sessions, so wait for a moment
+    when nobody is on the screen (e.g. right after the parent logs out)."""
+    while True:
+        await asyncio.sleep(2)
+        if os.path.exists(GDM_RESTART_PENDING) and not screen_in_use():
+            os.unlink(GDM_RESTART_PENDING)
+            print("restarting GDM for the new login screen settings", flush=True)
+            subprocess.run(["systemctl", "restart", "gdm"])
+
+
+async def main():
+    known = set(evdev.list_devices())
+    tasks = [watch_hotplug(known), restart_gdm_when_free(), sleep_when_idle()]
+    for kind, dev in input_devices():
+        print(f"watching {kind}: {dev.name}", flush=True)
+        tasks.append(watch_touch(dev) if kind == "touch" else watch_keyboard(dev))
+    await asyncio.gather(*tasks)
+
+
+asyncio.run(main())

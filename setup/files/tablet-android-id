@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Prints Waydroid's Google Services Framework Android ID, which must be
+# registered once at https://www.google.com/android/uncertified before the
+# Play Store will sign in. Android has to be running (kid session up).
+set -euo pipefail
+sudo waydroid shell -- sh -c \
+  "sqlite3 /data/data/*/*/gservices.db \"select value from main where name = 'android_id';\""

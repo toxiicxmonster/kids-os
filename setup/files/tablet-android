@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Runs inside Cage: start the Android session, show its full UI, and restart
+# everything if Android stops. The Kids OS splash covers the screen until the
+# carousel is ready, so the kid never sees Android's boot or "Phone is starting".
+log="${XDG_RUNTIME_DIR:-/tmp}/tablet-android.log"
+exec >>"$log" 2>&1
+
+aprop() { waydroid prop get "$1" 2>/dev/null; }
+
+while true; do
+  echo "$(date -Is) starting waydroid session"
+  /usr/local/bin/tablet-splash &
+  splash=$!
+
+  waydroid session stop &>/dev/null
+  waydroid session start &
+  session=$!
+
+  for _ in $(seq 120); do
+    waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING' && break
+    kill -0 "$session" 2>/dev/null || break
+    sleep 1
+  done
+
+  # The parent may have left Android in parent mode; the kid always gets kid mode.
+  waydroid prop set persist.waydroid.tablet_mode kid
+
+  # Wait until Android has booted and unlocked user 0 (that's when "Phone is
+  # starting..." goes away), then give the carousel a moment to draw.
+  for _ in $(seq 300); do
+    [[ "$(aprop sys.boot_completed)" == 1 && "$(aprop sys.user.0.ce_available)" == true ]] && break
+    kill -0 "$session" 2>/dev/null || break
+    sleep 1
+  done
+  sleep 3
+
+  # Every kid has their own Android, and updates are installed into whichever
+  # one was running at the time: bring this one's Kids OS apps up to date
+  # (under the splash). Remembered per kid in their home folder.
+  for apk in /usr/local/share/tablet-os/*.apk; do
+    app="$(basename "$apk" .apk)"
+    want="$(cat "/usr/local/share/tablet-os/$app.version" 2>/dev/null)"
+    have_file="$HOME/.local/share/tablet-os/$app.version"
+    [[ -n $want && "$(cat "$have_file" 2>/dev/null)" == "$want" ]] && continue
+    if waydroid app install "$apk"; then
+      mkdir -p "$(dirname "$have_file")"
+      echo "$want" > "$have_file"
+    fi
+  done
+
+  # Cage stacks the newest window on top, so Android's covers the splash.
+  waydroid show-full-ui
+  sleep 3
+  kill "$splash" 2>/dev/null
+
+  wait "$session"
+  echo "$(date -Is) waydroid session ended"
+  sleep 2
+done

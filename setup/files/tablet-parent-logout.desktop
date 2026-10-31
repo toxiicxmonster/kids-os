@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Back to Kids OS
+Comment=Log out of the parent account; the kid's tablet comes back in about 10 seconds
+Exec=gnome-session-quit --logout --no-prompt
+Icon=system-log-out
+Type=Application
+Categories=System;

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Kid volume (the parent-mode slider's setting) from the Linux side, for the
+# parents' web portal. Talks to Tablet Home's VolumeReceiver inside Android.
+#
+#   tablet-volume            print the kid volume (percent)
+#   tablet-volume 80         set it to 80%, then print it
+#   tablet-volume --request  (tablet-volume.path) answer the Movies & TV
+#                            bridge: reads "<id> get|<percent>" from REQUEST,
+#                            writes "<id> <percent>|error" to STATUS
+set -uo pipefail
+
+STATE=/var/lib/tablet-movies
+REQUEST=$STATE/volume-request
+STATUS=$STATE/volume-status
+
+volume() {
+  local args=() out
+  [[ ${1:-} =~ ^[0-9]+$ ]] && args=(--ei percent "$1")
+  # "Broadcast completed: result=0, data="80""
+  out="$(timeout 20 waydroid shell -- am broadcast -n org.tabletos.home/.VolumeReceiver "${args[@]}" 2>/dev/null)"
+  [[ $out =~ data=\"([0-9]+)\" ]] || return 1
+  echo "${BASH_REMATCH[1]}"
+}
+
+if [[ ${1:-} == --request ]]; then
+  read -r id what < "$REQUEST" || exit 0
+  [[ $what == get ]] && what=""
+  result="$(volume "$what")" || result=error
+  printf '%s %s\n' "$id" "$result" > "$STATUS.tmp"
+  chown tablet-movies:tablet-movies "$STATUS.tmp"
+  mv "$STATUS.tmp" "$STATUS"
+  exit 0
+fi
+volume "${1:-}"

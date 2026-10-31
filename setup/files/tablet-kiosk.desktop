@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Tablet
+Comment=Android full screen (kid kiosk)
+Exec=/usr/local/bin/tablet-kiosk-session
+Type=Application
+DesktopNames=tablet-kiosk

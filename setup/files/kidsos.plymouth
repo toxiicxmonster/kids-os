@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Kids OS
+Description=Cartoon sky with the Kids OS title, plus a status line (e.g. while updating)
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/kidsos
+ScriptFile=/usr/share/plymouth/themes/kidsos/kidsos.script

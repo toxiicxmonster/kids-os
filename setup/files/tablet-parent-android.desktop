@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Kid Tablet (parent mode)
+Comment=Install apps and choose what appears in the kid's carousel
+Exec=/usr/local/bin/tablet-parent-android
+Icon=waydroid
+Type=Application
+Categories=System;

@@ -1,0 +1,48 @@
+#cloud-config
+# Kids OS installer (Ubuntu Server 24.04 autoinstall), used from the Kids OS USB
+# stick. Asks only for: Wi-Fi/network, which disk to ERASE (the disk screen
+# shows each disk and its partitions), and the parent's login. Everything else
+# happens on first boot (kidsos-firstboot), which needs internet.
+autoinstall:
+  version: 1
+  interactive-sections:
+    - network
+    - storage
+    - identity
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  timezone: geoip
+  # No identity block: the login screen asks for it (suggested: name "parent").
+  storage:
+    layout:
+      name: direct
+  ssh:
+    install-server: false
+  updates: security
+  late-commands:
+    # Payload from the stick: the setup scripts, the parent's session (Android
+    # data, Movies settings, app signing key) and the Android images.
+    - cp -r /cdrom/kidsos/payload /target/opt/kidsos-install
+    - chmod -R go-rwx /target/opt/kidsos-install/session
+    - install -m 755 /target/opt/kidsos-install/setup/files/kidsos-firstboot /target/usr/local/sbin/kidsos-firstboot
+    - |
+      cat > /target/etc/systemd/system/kidsos-firstboot.service <<'EOF'
+      [Unit]
+      Description=Kids OS first-boot setup (about 30-60 minutes, needs internet)
+      Wants=network-online.target
+      After=network-online.target
+      Before=display-manager.service getty@tty1.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/kidsos-firstboot
+      TimeoutStartSec=3h
+      StandardOutput=journal+console
+      StandardError=journal+console
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+    - curtin in-target -- systemctl enable kidsos-firstboot.service
+  shutdown: reboot

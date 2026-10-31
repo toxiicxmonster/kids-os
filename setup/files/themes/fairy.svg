@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <!-- Kids OS theme "Fairy garden": flowers, butterflies, a toadstool house, sparkles. Middle kept clear. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b9f0e0"/>
+      <stop offset="0.6" stop-color="#dcf8e8"/>
+      <stop offset="1" stop-color="#f4fff0"/>
+    </linearGradient>
+    <g id="flower">
+      <path d="M0 0 L0 160" stroke="#4fae4c" stroke-width="14" stroke-linecap="round"/>
+      <g stroke-width="6" stroke-linejoin="round">
+        <circle cx="0" cy="-40" r="34"/><circle cx="38" cy="-12" r="34"/><circle cx="24" cy="32" r="34"/>
+        <circle cx="-24" cy="32" r="34"/><circle cx="-38" cy="-12" r="34"/>
+      </g>
+      <circle r="26" fill="#ffe14d" stroke="#e5b23a" stroke-width="6"/>
+    </g>
+    <g id="butterfly" stroke="#7a4fa8" stroke-width="5" stroke-linejoin="round">
+      <path d="M0 0 Q-70 -80 -80 -10 Q-80 30 0 0 Z"/>
+      <path d="M0 0 Q70 -80 80 -10 Q80 30 0 0 Z"/>
+      <path d="M0 0 Q-50 60 -20 70 Q0 60 0 0 Z"/>
+      <path d="M0 0 Q50 60 20 70 Q0 60 0 0 Z"/>
+      <path d="M0 -30 L0 40" stroke-width="10" stroke-linecap="round"/>
+    </g>
+    <g id="sparkle">
+      <path d="M0 -24 Q4 -4 24 0 Q4 4 0 24 Q-4 4 -24 0 Q-4 -4 0 -24 Z" fill="#fff6a8"/>
+    </g>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+
+  <!-- grass -->
+  <path d="M0 960 Q480 920 960 950 Q1440 980 1920 940 L1920 1080 L0 1080 Z" fill="#8fdc7a" stroke="#5cbf5a" stroke-width="8"/>
+
+  <!-- flowers along the bottom -->
+  <use href="#flower" transform="translate(110 860)" fill="#ff8fb1" stroke="#e0607f"/>
+  <use href="#flower" transform="translate(270 900) scale(0.8)" fill="#c9a0ff" stroke="#9a6fe0"/>
+  <use href="#flower" transform="translate(620 920) scale(0.7)" fill="#ffb347" stroke="#e5862a"/>
+  <use href="#flower" transform="translate(1180 930) scale(0.75)" fill="#7fc8ff" stroke="#4a96d9"/>
+  <use href="#flower" transform="translate(1840 860)" fill="#ff8fb1" stroke="#e0607f"/>
+
+  <!-- toadstool house, bottom right -->
+  <g transform="translate(1550 960)" stroke="#b8735a" stroke-width="9" stroke-linejoin="round">
+    <path d="M-90 0 L-80 -170 L80 -170 L90 0 Z" fill="#fff3dc"/>
+    <path d="M-30 0 L-30 -80 Q0 -115 30 -80 L30 0 Z" fill="#c98a5a"/>
+    <circle cx="50" cy="-120" r="18" fill="#9fe0ff"/>
+    <path d="M-230 -160 Q0 -380 230 -160 Z" fill="#ff6b6b" stroke="#d94a4a"/>
+    <g fill="#ffffff" stroke="none">
+      <circle cx="-110" cy="-210" r="26"/><circle cx="0" cy="-270" r="30"/><circle cx="110" cy="-205" r="24"/>
+    </g>
+  </g>
+
+  <!-- butterflies and sparkles -->
+  <use href="#butterfly" transform="translate(260 240)" fill="#ffb3d9"/>
+  <use href="#butterfly" transform="translate(1620 220) scale(0.85) rotate(15)" fill="#b3d9ff"/>
+  <use href="#butterfly" transform="translate(420 640) scale(0.6) rotate(-15)" fill="#ffe08a"/>
+  <use href="#sparkle" transform="translate(800 120)"/>
+  <use href="#sparkle" transform="translate(1250 200) scale(0.8)"/>
+  <use href="#sparkle" transform="translate(140 480) scale(0.9)"/>
+  <use href="#sparkle" transform="translate(1800 520) scale(0.8)"/>
+  <use href="#sparkle" transform="translate(980 1010) scale(0.7)"/>
+</svg>

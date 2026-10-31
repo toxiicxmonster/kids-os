@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Movies &amp; TV</title>
+<style>
+  :root {
+    --sky: #2f9be8; --sky-light: #e3f4fd; --navy: #0d47a1; --ink: #1d2733; --muted: #5b6b7d;
+    --card: #ffffff; --bg: #f2f8fd; --red: #d93a3a; --green: #2e9d5b; --line: #d5e3ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --card: #17212c; --bg: #0e151d; --ink: #e6eef6; --muted: #9db0c3; --sky-light: #1d3347; --line: #2a3a4b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+  header { background: linear-gradient(180deg, #2f9be8, #6cc4f5); color: #fff; padding: 18px 16px 22px; }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; opacity: .9; font-size: 14px; }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 17px; margin: 0 0 10px; }
+  .status { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+  .status.on { color: var(--green); } .status.paused { color: var(--red); }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+  button { font: inherit; border: 0; border-radius: 12px; padding: 10px 14px; background: var(--sky-light); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--sky); color: #fff; }
+  button.danger { background: transparent; color: var(--red); padding: 6px 10px; }
+  button:disabled { opacity: .5; }
+  input { font: inherit; width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  .row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .row:first-child { border-top: 0; }
+  .row img { width: 44px; height: 66px; object-fit: cover; border-radius: 6px; background: var(--sky-light); flex: none; }
+  .row .title { flex: 1; min-width: 0; }
+  .row .sub { color: var(--muted); font-size: 13px; }
+  .search { display: flex; gap: 8px; margin-bottom: 8px; }
+  .search input { flex: 1; }
+  .msg { color: var(--muted); font-size: 14px; margin: 6px 0 0; }
+  .error { color: var(--red); }
+  #login { max-width: 360px; margin: 40px auto; text-align: center; }
+  #login input { text-align: center; font-size: 28px; letter-spacing: 8px; margin: 12px 0; }
+  .slider { flex: 1 1 100%; display: block; margin-bottom: 4px; }
+  .slider span { display: block; font-weight: 600; margin-bottom: 4px; }
+  .slider input { padding: 0; border: 0; background: none; accent-color: var(--sky); height: 36px; }
+  .tabs { display: flex; gap: 8px; margin: 4px 0 16px; }
+  .tabs button { flex: 1; font-weight: 700; padding: 12px; }
+  .tabs button.on { background: var(--sky); color: #fff; }
+  .row img.wide { width: 96px; height: 54px; }
+  .kidbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .kidbar button { font-weight: 700; }
+  .kidbar button.on { background: var(--sky); color: #fff; }
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 15px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; }
+  .ok { color: var(--green); } .bad { color: var(--red); }
+  .event { display: flex; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 15px; }
+  .event:first-child { border-top: 0; }
+  .event .when { color: var(--muted); flex: none; width: 76px; }
+  .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .inline input[type=time] { width: auto; }
+  .inline select { font: inherit; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Kids OS · Movies &amp; TV · Dance</h1>
+  <p id="tvline">Movie time on the kids' tablet</p>
+</header>
+<main>
+  <section id="login" class="card" hidden>
+    <h2>Enter the PIN</h2>
+    <p class="msg">Set in Movies &amp; TV setup on the tablet (parent mode).</p>
+    <input id="pin" inputmode="numeric" autocomplete="current-password" type="password" maxlength="8" aria-label="PIN">
+    <button class="primary" id="loginBtn" style="width:100%">Unlock</button>
+    <p class="msg error" id="loginMsg"></p>
+  </section>
+
+  <div id="app" hidden>
+    <nav class="kidbar" id="kidBar" hidden></nav>
+
+    <section class="card">
+      <h2>📺 On the TV now</h2>
+      <div id="nowText" class="msg">Checking…</div>
+      <div class="buttons" style="margin-top:10px"><button id="stopBtn">⏹ Stop (TV home screen)</button></div>
+    </section>
+
+    <section class="card">
+      <h2>🌙 Tablet time <span id="schedKid" class="sub"></span></h2>
+      <div id="schedStatus" class="status"></div>
+      <label class="inline"><input type="checkbox" id="schedOn" style="width:auto"> Only allow the tablet</label>
+      <div class="inline">
+        from <input type="time" id="schedFrom" value="07:00"> to <input type="time" id="schedTo" value="19:30">
+      </div>
+      <div class="inline">
+        up to
+        <select id="schedDaily">
+          <option value="0">no daily limit</option><option value="30">30 minutes</option>
+          <option value="45">45 minutes</option><option value="60">1 hour</option>
+          <option value="90">1½ hours</option><option value="120">2 hours</option>
+          <option value="180">3 hours</option><option value="240">4 hours</option>
+        </select> a day
+        <button class="primary" id="schedSave">Save</button>
+      </div>
+      <div class="buttons">
+        <button id="extra30">+30 minutes</button>
+        <button id="extra60">+1 hour</button>
+        <button id="sleepNow">🌙 Sleep now</button>
+      </div>
+      <p class="msg">Outside her time the tablet shows a "sleeping" moon and Movies &amp; TV and Dance won't start
+        anything. "+30 minutes" and "Sleep now" override the schedule.</p>
+    </section>
+
+    <section class="card">
+      <h2>Movie time</h2>
+      <div id="pauseText" class="status"></div>
+      <div class="buttons">
+        <label class="slider" for="pauseLen">
+          <span id="pauseLenText"></span>
+          <input id="pauseLen" type="range" min="15" max="1440" step="15" value="60">
+        </label>
+        <button data-pause="slider" class="primary" id="pauseBtn">Pause</button>
+        <button data-pause="forever">Until I resume</button>
+        <button data-pause="0" id="resumeBtn">Resume now</button>
+      </div>
+      <p class="msg">While paused, the kids' posters are dimmed and tapping one won't start anything on the TV.</p>
+    </section>
+
+    <section class="card">
+      <h2>Tablet volume</h2>
+      <label class="slider" for="vol">
+        <span id="volText">Checking…</span>
+        <input id="vol" type="range" min="0" max="100" step="5" value="100" disabled>
+      </label>
+      <p class="msg">Same as "Kid volume" in parent mode on the tablet. The kids can't change it.</p>
+    </section>
+
+    <nav class="tabs">
+      <button id="tabMoviesBtn" class="on">🎬 Movies &amp; TV</button>
+      <button id="tabDanceBtn">💃 Dance</button>
+    </nav>
+
+    <div id="tabMovies">
+    <section class="card">
+      <h2>On the kids' list <span id="count" class="sub"></span></h2>
+      <div id="items"></div>
+    </section>
+
+    <section class="card">
+      <h2>Add movies and shows</h2>
+      <div class="search">
+        <input id="q" placeholder="Search the kids' library" enterkeyhint="search">
+        <button class="primary" id="searchBtn">Search</button>
+      </div>
+      <div id="results"></div>
+    </section>
+
+    <section class="card">
+      <h2>Add from Netflix</h2>
+      <div class="search">
+        <input id="nf" placeholder="netflix.com/title/… link or number" inputmode="url">
+        <button class="primary" id="nfBtn">Add</button>
+      </div>
+      <p class="msg" id="nfMsg">Find the show on netflix.com and copy its link. It opens in Netflix on the TV,
+        in whichever Netflix profile was used last there, so keep the TV on the kids' profile.</p>
+    </section>
+    </div>
+
+    <div id="tabDance" hidden>
+    <section class="card">
+      <h2>Songs she can pick <span id="danceCount" class="sub"></span></h2>
+      <div id="danceItems"><p class="msg">Loading…</p></div>
+      <p class="msg">In the Dance app she taps one song, or lines up to 6 for a dance party. They play
+        on the TV through YouTube (with YouTube's ads); after the last one, YouTube carries on with its autoplay.</p>
+    </section>
+
+    <section class="card">
+      <h2>Add Danny Go! songs</h2>
+      <div class="search">
+        <input id="dq" placeholder="Search Danny Go! songs (blank = all)" enterkeyhint="search">
+        <button class="primary" id="dSearchBtn">Search</button>
+      </div>
+      <div id="dResults"></div>
+    </section>
+
+    <section class="card">
+      <h2>Add any YouTube video</h2>
+      <div class="search">
+        <input id="dLink" placeholder="youtube.com/watch?v=… or youtu.be/…" inputmode="url">
+        <button class="primary" id="dLinkBtn">Add</button>
+      </div>
+      <p class="msg" id="dLinkMsg">Paste the link of any music video (Share → Copy link in the YouTube app).</p>
+    </section>
+    </div>
+
+    <section class="card">
+      <h2>🕘 History <span id="histKid" class="sub"></span></h2>
+      <div id="history"><p class="msg">Loading…</p></div>
+    </section>
+
+    <section class="card">
+      <h2>🩺 Status</h2>
+      <dl class="facts" id="system"><dt>Checking…</dt><dd></dd></dl>
+    </section>
+
+    <p style="text-align:center"><button id="logoutBtn">Sign out on this device</button></p>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+let currentKid = null;
+let kidNames = {};
+async function api(method, path, body) {
+  const kidParam = currentKid ? (path.includes("?") ? "&" : "?") + "kid=" + encodeURIComponent(currentKid) : "";
+  const res = await fetch("/api/portal/" + path + kidParam, {
+    method, credentials: "same-origin",
+    headers: body ? {"Content-Type": "application/json"} : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && path !== "login") { showLogin(); throw new Error("locked"); }
+  if (!res.ok) throw new Error(data.error || "Something went wrong");
+  return data;
+}
+
+function showLogin(msg) {
+  $("app").hidden = true; $("login").hidden = false;
+  $("loginMsg").textContent = msg || ""; $("pin").value = ""; $("pin").focus();
+}
+
+function itemRow(m, action) {
+  const row = document.createElement("div");
+  row.className = "row";
+  if (action.poster) {
+    const img = document.createElement("img");
+    img.loading = "lazy"; img.alt = ""; img.src = "/api/portal/poster/" + encodeURIComponent(m.key);
+    row.append(img);
+  }
+  const t = document.createElement("div");
+  t.className = "title";
+  const kind = {show: "TV show · random episode", netflix: "Netflix"}[m.kind] || "Movie";
+  t.innerHTML = "<div></div><div class='sub'></div>";
+  t.firstChild.textContent = m.title;
+  t.lastChild.textContent = [m.year, kind].filter(Boolean).join(" · ");
+  const b = document.createElement("button");
+  b.textContent = action.label; b.className = action.cls || "";
+  b.onclick = async () => {
+    b.disabled = true;
+    try { await action.run(m); } catch (e) { alert(e.message); b.disabled = false; }
+  };
+  row.append(t, b);
+  return row;
+}
+
+async function refresh() {
+  const s = await api("GET", "status");
+  if (!s.authed) { showLogin(s.pin_set ? "" : "No PIN yet: set one in Movies & TV setup on the tablet."); return; }
+  $("login").hidden = true; $("app").hidden = false;
+  if (!volumeLoaded) {
+    volumeLoaded = true;
+    loadVolume();
+    loadKids().then(() => { loadSchedule().catch(() => {}); loadHistory().catch(() => {}); }).catch(() => {});
+    loadSystem().catch(() => {});
+  }
+  loadNow().catch(() => {});
+  $("tvline").textContent = s.tv ? "Plays on: " + s.tv : "Movie time on the kids' tablet";
+  $("pauseText").textContent = s.pause_text;
+  $("pauseText").className = "status " + (s.paused ? "paused" : "on");
+  $("resumeBtn").disabled = !s.paused;
+  $("count").textContent = "(" + s.items.length + ")";
+  const items = $("items");
+  items.replaceChildren(...s.items.map((m) => itemRow(m, {
+    poster: true, label: "Remove", cls: "danger",
+    run: async (m) => { await api("DELETE", "items/" + m.key); await refresh(); },
+  })));
+  if (!s.items.length) items.innerHTML = "<p class='msg'>Nothing yet. Search below to add some.</p>";
+}
+
+async function search() {
+  const results = $("results");
+  results.innerHTML = "<p class='msg'>Searching…</p>";
+  try {
+    const r = await api("GET", "library?q=" + encodeURIComponent($("q").value));
+    results.replaceChildren(...r.items.map((m) => itemRow(m, {
+      label: m.chosen ? "Added" : "Add", cls: m.chosen ? "" : "primary",
+      run: async (m) => {
+        if (m.chosen) return;
+        await api("POST", "items/" + m.key);
+        m.chosen = true;
+        await refresh();
+        search();  // keep the results and the search text; just update the buttons
+      },
+    })));
+    if (!r.items.length) results.innerHTML = "<p class='msg'>No matches.</p>";
+  } catch (e) {
+    results.innerHTML = "";
+    if (e.message !== "locked") results.innerHTML = "<p class='msg error'></p>", results.firstChild.textContent = e.message;
+  }
+}
+
+$("loginBtn").onclick = async () => {
+  try { await api("POST", "login", {pin: $("pin").value}); await refresh(); }
+  catch (e) { $("loginMsg").textContent = e.message; }
+};
+$("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
+$("searchBtn").onclick = search;
+$("nfBtn").onclick = async () => {
+  $("nfBtn").disabled = true;
+  try {
+    await api("POST", "netflix", {ref: $("nf").value});
+    $("nf").value = ""; $("nfMsg").textContent = "Added.";
+    await refresh();
+  } catch (e) {
+    if (e.message !== "locked") $("nfMsg").textContent = e.message;
+  }
+  $("nfBtn").disabled = false;
+};
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+// Pause length: 15 minutes to 24 hours, in 15-minute steps.
+function pauseLenText() {
+  const m = Number($("pauseLen").value), h = Math.floor(m / 60), r = m % 60;
+  const len = [h ? h + (h === 1 ? " hour" : " hours") : "", r ? r + " min" : ""].filter(Boolean).join(" ");
+  const end = new Date(Date.now() + m * 60000);
+  const day = end.toDateString() === new Date().toDateString() ? "" : " tomorrow";
+  $("pauseLenText").textContent = `${len} (until ${end.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}${day})`;
+}
+$("pauseLen").addEventListener("input", pauseLenText);
+pauseLenText();
+setInterval(pauseLenText, 30000);
+document.querySelectorAll("[data-pause]").forEach((b) => b.onclick = async () => {
+  const v = b.dataset.pause === "slider" ? $("pauseLen").value : b.dataset.pause;
+  await api("POST", "pause", {minutes: /^\d+$/.test(v) ? Number(v) : v});
+  await refresh();
+});
+// Tablet volume: read once when the page opens (it asks Android, which takes a moment).
+async function loadVolume() {
+  try {
+    const r = await api("GET", "volume");
+    showVolume(r.percent);
+  } catch (e) {
+    if (e.message !== "locked") $("volText").textContent = "Couldn't reach the tablet";
+  }
+}
+function showVolume(percent) {
+  const ok = Number.isInteger(percent);
+  $("vol").disabled = !ok;
+  if (ok) $("vol").value = percent;
+  $("volText").textContent = ok ? percent + "%" : "The tablet isn't answering (is it on?)";
+}
+$("vol").addEventListener("input", () => { $("volText").textContent = $("vol").value + "%…"; });
+$("vol").addEventListener("change", async () => {
+  $("vol").disabled = true;
+  try { showVolume((await api("POST", "volume", {percent: Number($("vol").value)})).percent); }
+  catch (e) { $("volText").textContent = e.message; $("vol").disabled = false; }
+});
+let volumeLoaded = false;
+
+// ---- tabs ------------------------------------------------------------------
+function showTab(name) {
+  $("tabMovies").hidden = name !== "movies";
+  $("tabDance").hidden = name !== "dance";
+  $("tabMoviesBtn").classList.toggle("on", name === "movies");
+  $("tabDanceBtn").classList.toggle("on", name === "dance");
+  if (name === "dance") refreshDance();
+}
+$("tabMoviesBtn").onclick = () => showTab("movies");
+$("tabDanceBtn").onclick = () => showTab("dance");
+
+// ---- Dance -------------------------------------------------------------------
+const minutes = (sec) => Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+
+function songRow(song, action) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const img = document.createElement("img");
+  img.className = "wide"; img.loading = "lazy"; img.alt = "";
+  img.src = "/api/portal/dance-thumb/" + encodeURIComponent(song.id);
+  const t = document.createElement("div");
+  t.className = "title";
+  t.innerHTML = "<div></div><div class='sub'></div>";
+  t.firstChild.textContent = song.title;
+  t.lastChild.textContent = song.duration ? minutes(song.duration) : "";
+  const b = document.createElement("button");
+  b.textContent = action.label; b.className = action.cls || "";
+  b.disabled = !!action.disabled;
+  b.onclick = async () => {
+    b.disabled = true;
+    try { await action.run(song); } catch (e) { alert(e.message); b.disabled = false; }
+  };
+  row.append(img, t, b);
+  return row;
+}
+
+async function refreshDance() {
+  const r = await api("GET", "dance");
+  $("danceCount").textContent = "(" + r.songs.length + ")";
+  $("danceItems").replaceChildren(...r.songs.map((song) => songRow(song, {
+    label: "Remove", cls: "danger",
+    run: async (song) => { await api("DELETE", "dance/" + song.id); await refreshDance(); danceSearch(true); },
+  })));
+  if (!r.songs.length) $("danceItems").innerHTML = "<p class='msg'>No songs yet. Add some below.</p>";
+}
+
+let danceSearched = false;
+async function danceSearch(quiet) {
+  if (quiet && !danceSearched) return;
+  danceSearched = true;
+  const box = $("dResults");
+  if (!quiet) box.innerHTML = "<p class='msg'>Looking at the Danny Go! channel… (the first time takes a few seconds)</p>";
+  try {
+    const r = await api("GET", "dance-library?q=" + encodeURIComponent($("dq").value));
+    box.replaceChildren(...r.songs.map((song) => songRow(song, {
+      label: song.chosen ? "Added" : "Add", cls: song.chosen ? "" : "primary", disabled: song.chosen,
+      run: async (song) => { await api("POST", "dance/" + song.id); await refreshDance(); danceSearch(true); },
+    })));
+    if (!r.songs.length) box.innerHTML = "<p class='msg'>No matches.</p>";
+  } catch (e) {
+    if (e.message !== "locked") { box.innerHTML = "<p class='msg error'></p>"; box.firstChild.textContent = e.message; }
+  }
+}
+$("dSearchBtn").onclick = () => danceSearch(false);
+$("dq").addEventListener("keydown", (e) => { if (e.key === "Enter") danceSearch(false); });
+$("dLinkBtn").onclick = async () => {
+  $("dLinkBtn").disabled = true;
+  try {
+    await api("POST", "dance-link", {ref: $("dLink").value});
+    $("dLink").value = ""; $("dLinkMsg").textContent = "Added.";
+    await refreshDance(); danceSearch(true);
+  } catch (e) {
+    if (e.message !== "locked") $("dLinkMsg").textContent = e.message;
+  }
+  $("dLinkBtn").disabled = false;
+};
+
+// ---- kids ----------------------------------------------------------------------
+async function loadKids() {
+  const r = await api("GET", "kids");
+  kidNames = Object.fromEntries(r.kids.map((k) => [k.user, k.name]));
+  if (!currentKid || !kidNames[currentKid]) currentKid = r.kids[0].user;
+  const bar = $("kidBar");
+  bar.hidden = r.kids.length < 2;
+  bar.replaceChildren(...r.kids.map((k) => {
+    const b = document.createElement("button");
+    b.textContent = "🧒 " + k.name;
+    b.className = k.user === currentKid ? "on" : "";
+    b.onclick = () => { currentKid = k.user; loadKids(); refreshAll(); };
+    return b;
+  }));
+  for (const id of ["schedKid", "histKid"]) $(id).textContent = r.kids.length > 1 ? "· " + kidNames[currentKid] : "";
+}
+async function refreshAll() {
+  await refresh().catch(() => {});
+  if (!$("tabDance").hidden) refreshDance().catch(() => {});
+  loadSchedule().catch(() => {});
+  loadHistory().catch(() => {});
+}
+
+// ---- on the TV now -----------------------------------------------------------------
+const ago = (t) => {
+  const m = Math.round((Date.now() / 1000 - t) / 60);
+  return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago";
+};
+async function loadNow() {
+  const r = await api("GET", "now");
+  const parts = [];
+  if (!r.tv) parts.push("No TV chosen yet.");
+  else if (r.tv.power !== "PowerOn") parts.push(r.tv.name + " is off.");
+  else {
+    let line = r.tv.name + ": " + (r.tv.app || "home screen");
+    if (r.tv.state === "play") line += " · playing";
+    else if (r.tv.state === "pause") line += " · paused";
+    parts.push(line);
+  }
+  if (r.last) parts.push("Last picked on the tablet: " + r.last.title + (r.last.kid_name ? " (" + r.last.kid_name + ")" : "") + ", " + ago(r.last.at));
+  $("nowText").textContent = parts.join("\n");
+  $("nowText").style.whiteSpace = "pre-line";
+  $("stopBtn").disabled = !r.tv || r.tv.power !== "PowerOn";
+}
+$("stopBtn").onclick = async () => {
+  $("stopBtn").disabled = true;
+  try { const r = await api("POST", "tv-stop"); if (!r.ok) alert(r.message); } catch (e) { alert(e.message); }
+  setTimeout(() => loadNow().catch(() => {}), 2000);
+};
+
+// ---- tablet time ---------------------------------------------------------------------
+const clockText = (t) => new Date(t * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+async function loadSchedule() {
+  const r = await api("GET", "schedule");
+  $("schedOn").checked = r.schedule.enabled;
+  $("schedFrom").value = r.schedule.from;
+  $("schedTo").value = r.schedule.to;
+  $("schedDaily").value = String(r.schedule.daily);
+  let text;
+  if (!r.allowed) text = "🌙 Sleeping. " + r.message;
+  else if (r.extra_until > Date.now() / 1000) text = "Extra time until " + clockText(r.extra_until);
+  else if (r.minutes_left !== null) text = "On: " + r.minutes_left + " min left";
+  else text = "On (no limits)";
+  $("schedStatus").textContent = text + " · used today: " + r.used_today + " min";
+  $("schedStatus").className = "status " + (r.allowed ? "on" : "paused");
+}
+$("schedSave").onclick = async () => {
+  try {
+    await api("POST", "schedule", {enabled: $("schedOn").checked, from: $("schedFrom").value,
+                                   to: $("schedTo").value, daily: Number($("schedDaily").value)});
+    await loadSchedule();
+  } catch (e) { if (e.message !== "locked") alert(e.message); }
+};
+$("schedOn").onchange = () => $("schedSave").click();
+for (const [id, minutes] of [["extra30", 30], ["extra60", 60]]) {
+  $(id).onclick = async () => { await api("POST", "extra", {minutes}); await loadSchedule(); };
+}
+$("sleepNow").onclick = async () => { await api("POST", "sleep"); await loadSchedule(); };
+
+// ---- history ---------------------------------------------------------------------------
+const kindIcon = {movie: "🎬", show: "📺", netflix: "📺", dance: "💃", app: "📱"};
+async function loadHistory() {
+  const r = await api("GET", "history");
+  const box = $("history");
+  if (!r.events.length) { box.innerHTML = "<p class='msg'>Nothing yet.</p>"; return; }
+  let lastDay = "";
+  const rows = [];
+  for (const e of r.events.slice(0, 60)) {
+    const d = new Date(e.t * 1000);
+    const day = d.toLocaleDateString([], {weekday: "long", month: "short", day: "numeric"});
+    if (day !== lastDay) {
+      const h = document.createElement("div");
+      h.className = "msg"; h.style.fontWeight = "700"; h.style.marginTop = "10px"; h.textContent = day;
+      rows.push(h); lastDay = day;
+    }
+    const row = document.createElement("div");
+    row.className = "event";
+    row.innerHTML = "<span class='when'></span><span></span>";
+    row.firstChild.textContent = d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+    row.lastChild.textContent = (kindIcon[e.kind] || "•") + " " + e.title;
+    rows.push(row);
+  }
+  box.replaceChildren(...rows);
+}
+
+// ---- status ------------------------------------------------------------------------------
+async function loadSystem() {
+  const r = await api("GET", "system");
+  const facts = [];
+  const add = (label, text, good) => facts.push([label, text, good]);
+  add("TV", r.tv.power === null ? "can't find it on the network" : (r.tv.name || "TV") + (r.tv.power === "PowerOn" ? " · on" : " · off (standby)"), r.tv.power !== null);
+  add("Plex", !r.plex.linked ? "not linked" : (r.plex.server || "server") + (r.plex.reachable ? " · reachable" : " · NOT reachable"), r.plex.linked && r.plex.reachable);
+  add("Updates", r.update ? r.update.result.replace("-", " ") + " · " + new Date(r.update.at * 1000).toLocaleString() + " (" + r.update.commit + ")" : "no record yet", !r.update || r.update.result !== "stage-failed");
+  add("Disk", r.disk.free_gb + " GB free of " + r.disk.total_gb + " GB", r.disk.free_gb > 5);
+  add("Running for", r.uptime_hours < 48 ? r.uptime_hours + " hours" : Math.round(r.uptime_hours / 24) + " days", true);
+  add("On the tablet now", r.kid_on_screen || "nobody (login screen or parent)", true);
+  $("system").replaceChildren(...facts.flatMap(([label, text, good]) => {
+    const dt = document.createElement("dt"); dt.textContent = label;
+    const dd = document.createElement("dd"); dd.textContent = text; dd.className = good ? "" : "bad";
+    return [dt, dd];
+  }));
+}
+
+$("logoutBtn").onclick = async () => { await api("POST", "logout"); showLogin(); };
+
+refresh().catch(() => {});
+setInterval(() => { if (!$("app").hidden) refresh().catch(() => {}); }, 30000);
+</script>
+</body>
+</html>

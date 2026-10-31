@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Full-screen "Kids OS" splash for the kid's session.
+
+Plays the frames of Android's boot animation (the same Kids OS cartoon) while
+Android boots behind it, so the kid never sees a black screen, Android's own
+boot screens or "Phone is starting...". tablet-android only opens Android's
+window once the carousel is ready (Cage stacks it on top), then closes this.
+"""
+import sys
+import zipfile
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf, GLib, Gtk  # noqa: E402
+
+ANIMATION = "/var/lib/waydroid/overlay/system/product/media/bootanimation.zip"
+
+
+def load_frames(path):
+    with zipfile.ZipFile(path) as z:
+        fps = int(z.read("desc.txt").decode().split()[2])
+        frames = []
+        for name in sorted(n for n in z.namelist() if n.endswith(".png")):
+            loader = GdkPixbuf.PixbufLoader()
+            loader.write(z.read(name))
+            loader.close()
+            frames.append(loader.get_pixbuf())
+    return fps, frames
+
+
+def main():
+    try:
+        fps, frames = load_frames(sys.argv[1] if len(sys.argv) > 1 else ANIMATION)
+    except (OSError, KeyError, ValueError, GLib.Error):
+        fps, frames = 1, []
+
+    window = Gtk.Window()
+    window.set_decorated(False)
+    image = Gtk.Image()
+    window.add(image)
+    window.connect("destroy", Gtk.main_quit)
+    window.fullscreen()
+    window.show_all()
+
+    if frames:
+        state = {"i": 0, "scaled": {}}
+
+        def tick():
+            # Scale to the actual screen once its size is known (covers, like CSS cover).
+            w, h = window.get_allocated_width(), window.get_allocated_height()
+            frame = frames[state["i"] % len(frames)]
+            key = (state["i"] % len(frames), w, h)
+            if key not in state["scaled"] and w > 1 and h > 1:
+                scale = max(w / frame.get_width(), h / frame.get_height())
+                state["scaled"][key] = frame.scale_simple(
+                    int(frame.get_width() * scale), int(frame.get_height() * scale),
+                    GdkPixbuf.InterpType.BILINEAR)
+            image.set_from_pixbuf(state["scaled"].get(key, frame))
+            state["i"] += 1
+            return True
+
+        GLib.timeout_add(int(1000 / fps), tick)
+        tick()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

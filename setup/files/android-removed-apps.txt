@@ -1,0 +1,11 @@
+# Android packages hidden from the kid (uninstalled for user 0; the system
+# image keeps them, so `tablet-android-apps restore <pkg>` brings one back).
+# One package per line; blank lines and comments are ignored.
+
+# Camera
+org.lineageos.aperture
+com.google.android.apps.googlecamera.fishfood
+
+# Contacts, phone and messages
+com.google.android.contacts
+com.google.android.apps.messaging

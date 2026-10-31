@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Hide or restore Android apps for the kid. Android must be running.
+#
+#   tablet-android-apps apply            # hide everything in the list
+#   tablet-android-apps restore <pkg>    # bring one app back
+#   tablet-android-apps list             # show apps on the home screen/drawer
+set -euo pipefail
+
+LIST="${TABLET_APP_LIST:-/etc/tablet-os/android-removed-apps.txt}"
+
+ashell() { sudo waydroid shell -- sh -c "$1"; }
+
+case "${1:-apply}" in
+  apply)
+    grep -vE '^\s*(#|$)' "$LIST" | while read -r pkg; do
+      if ashell "pm list packages --user 0 $pkg" | grep -qx "package:$pkg"; then
+        echo "hiding $pkg: $(ashell "pm uninstall --user 0 $pkg")"
+      fi
+    done
+    ;;
+  restore)
+    ashell "cmd package install-existing --user 0 ${2:?package name}"
+    ;;
+  list)
+    ashell "cmd package query-activities -a android.intent.action.MAIN -c android.intent.category.LAUNCHER --brief" \
+      | grep / | cut -d/ -f1 | sort -u
+    ;;
+  *)
+    echo "usage: $0 apply | restore <pkg> | list" >&2
+    exit 1
+    ;;
+esac

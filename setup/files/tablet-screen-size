@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Prints the connected monitor's native resolution (e.g. 1920x1080), from the
+# kernel's display connectors, so artwork can be built at the screen's own size
+# even when nothing is drawing to it yet. Falls back to 1920x1080.
+for connector in /sys/class/drm/card*-*; do
+  if [[ "$(cat "$connector/status" 2>/dev/null)" == connected && -s $connector/modes ]]; then
+    mode="$(head -1 "$connector/modes")"
+    [[ $mode =~ ^[0-9]+x[0-9]+$ ]] && { echo "$mode"; exit 0; }
+  fi
+done
+echo 1920x1080

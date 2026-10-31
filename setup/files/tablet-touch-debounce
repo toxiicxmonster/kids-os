@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Kids OS touch debounce: smooths over a touch panel's momentary "finger lifted"
+blips, which turn every drag into a string of quick taps.
+
+The Dell's panel (1ddb:0001) reports the finger as lifted for ~20-35 ms several
+times during a drag; Android then sees taps instead of a scroll, so trying to
+scroll the Movies & TV grid starts whatever was under the finger. Real gaps
+between a toddler's taps are hundreds of ms.
+
+This grabs the panel (so nothing else reads it directly) and re-emits it as a
+clean single-touch touchscreen ("Kids OS touchscreen"), holding each lift back
+for HOLD seconds: a touch that comes back within that time continues the same
+drag. Everything that reads touch (Cage/Android, GNOME, the parent switch)
+uses the clean device. If this stops, the grab ends and the raw panel is used
+again.
+
+  tablet-touch-debounce                 find a known panel; exit quietly if none
+  tablet-touch-debounce --replay FILE   run a `libinput record` file through the
+                                        debounce and print the touches (testing)
+"""
+import re
+import select
+import sys
+import time
+
+HOLD = 0.08  # longest lift treated as a blip (seen: 18-34 ms; real gaps: 390 ms+)
+PANELS = {(0x1ddb, 0x0001)}  # vendor, product of panels that need this
+NAME = "Kids OS touchscreen"
+
+BTN_TOUCH, ABS_X, ABS_Y, EV_KEY, EV_ABS = 0x14a, 0x00, 0x01, 0x01, 0x03
+
+
+class Debouncer:
+    """Turns raw report frames into clean (type, code, value) events."""
+
+    def __init__(self, hold=HOLD):
+        self.hold = hold
+        self.down = False
+        self.lifted_at = None  # when the finger last seemed to lift, while held back
+
+    def frame(self, touch, positions, now):
+        """touch: 1, 0 or None (no change) in this report; positions: [(code, value)]."""
+        out = [(EV_ABS, code, value) for code, value in positions]
+        if touch == 1:
+            if self.lifted_at is not None:
+                self.lifted_at = None  # a blip: the same touch carries on
+            elif not self.down:
+                self.down = True
+                out.append((EV_KEY, BTN_TOUCH, 1))
+        elif touch == 0 and self.down and self.lifted_at is None:
+            self.lifted_at = now  # sent later, if the finger stays off
+        return out
+
+    def deadline(self):
+        return None if self.lifted_at is None else self.lifted_at + self.hold
+
+    def expire(self, now):
+        if self.lifted_at is not None and now >= self.lifted_at + self.hold:
+            self.lifted_at = None
+            self.down = False
+            return [(EV_KEY, BTN_TOUCH, 0)]
+        return []
+
+
+def replay(path):
+    """Print the touches a recording turns into, before and after the debounce."""
+    raw, clean = [], []
+    deb = Debouncer()
+    touch, positions = None, []
+    for line in open(path):
+        m = re.match(r"\s*- \[\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(-?\d+)\]", line)
+        if not m:
+            continue
+        sec, usec, etype, code, value = map(int, m.groups())
+        now = sec + usec / 1e6
+        clean += [now for ev in deb.expire(now) if ev[2] == 0]
+        if etype == EV_KEY and code == BTN_TOUCH:
+            touch = value
+            if value == 0:
+                raw.append(now)
+        elif etype == EV_ABS and code in (ABS_X, ABS_Y):
+            positions.append((code, value))
+        elif etype == 0 and code == 0:
+            deb.frame(touch, positions, now)
+            touch, positions = None, []
+    clean += [ev for ev in deb.expire(float("inf")) if ev[2] == 0]
+    print(f"raw taps/lifts: {len(raw)}  after debounce: {len(clean)}")
+
+
+def find_panel(evdev):
+    for path in evdev.list_devices():
+        dev = evdev.InputDevice(path)
+        caps = dev.capabilities()
+        if ((dev.info.vendor, dev.info.product) in PANELS and dev.name != NAME
+                and BTN_TOUCH in caps.get(EV_KEY, []) and EV_ABS in caps):
+            return dev
+    return None
+
+
+def main():
+    if "--replay" in sys.argv:
+        return replay(sys.argv[sys.argv.index("--replay") + 1])
+    import evdev
+    from evdev import AbsInfo, UInput, ecodes
+
+    panel = find_panel(evdev)
+    if panel is None:
+        print("no touch panel that needs debouncing", flush=True)
+        return
+    xinfo, yinfo = panel.absinfo(ABS_X), panel.absinfo(ABS_Y)
+    # The panel reports no size; assume a ~17" 4:3 monitor (only used for
+    # gesture distances, never for where a touch lands).
+    caps = {EV_KEY: [BTN_TOUCH], EV_ABS: [
+        (ABS_X, AbsInfo(0, xinfo.min, xinfo.max, 0, 0, max(1, (xinfo.max - xinfo.min) // 345))),
+        (ABS_Y, AbsInfo(0, yinfo.min, yinfo.max, 0, 0, max(1, (yinfo.max - yinfo.min) // 259)))]}
+    ui = UInput(caps, name=NAME, bustype=ecodes.BUS_VIRTUAL, input_props=[ecodes.INPUT_PROP_DIRECT])
+    panel.grab()
+    print(f"debouncing {panel.name} ({panel.path}) as '{NAME}'", flush=True)
+
+    deb = Debouncer()
+    touch, positions = None, []
+
+    def emit(events):
+        for etype, code, value in events:
+            ui.write(etype, code, value)
+        if events:
+            ui.syn()
+
+    while True:
+        deadline = deb.deadline()
+        timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+        ready, _, _ = select.select([panel.fd], [], [], timeout)
+        if not ready:
+            emit(deb.expire(time.monotonic()))
+            continue
+        for ev in panel.read():
+            if ev.type == EV_KEY and ev.code == BTN_TOUCH:
+                touch = ev.value
+            elif ev.type == EV_ABS and ev.code in (ABS_X, ABS_Y):
+                positions.append((ev.code, ev.value))
+            elif ev.type == ecodes.EV_SYN and ev.code == ecodes.SYN_REPORT:
+                emit(deb.frame(touch, positions, time.monotonic()))
+                touch, positions = None, []
+
+
+if __name__ == "__main__":
+    main()

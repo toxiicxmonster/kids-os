@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Kids OS first boot (enabled by the USB installer). Clones the "stable" branch
+# of the kids-os repo from GitHub (read-only installer key on the stick) and
+# runs the setup from that checkout, so fixes pushed to stable reach a box even
+# mid-install; falls back to the copy of the setup on the stick if GitHub can't
+# be reached. Restores the parent's session from the stick, then reboots into
+# Kids OS. If a step fails (e.g. no internet) it stops, stays enabled and tries
+# again on the next boot, fetching stable again first.
+set -uo pipefail
+
+SRC=/opt/kidsos-install
+SESSION=$SRC/session
+REPO="git@github.com:toxiicxmonster/kids-os.git"
+CHECKOUT=/opt/kids-os
+INSTALLER_KEY=$SESSION/installer_key
+DONE=/var/lib/tablet-os/firstboot-done
+exec > >(tee -a /var/log/kidsos-firstboot.log) 2>&1
+
+say() {
+  echo; echo "=== Kids OS setup: $* ($(date '+%H:%M'))"
+  # Also on the boot splash, once it exists (stage 50 installs it).
+  plymouth --ping 2>/dev/null && plymouth display-message --text="Setting up Kids OS: $*"
+  true
+}
+fail() { say "STOPPED: $*. It will try again on the next boot. Log: /var/log/kidsos-firstboot.log"; exit 1; }
+
+# The installer's login screen lets the parent pick any username; use that account.
+PARENT_USER="$(id -nu 1000)" || fail "no parent account (uid 1000)"
+export PARENT_USER
+
+say "waiting for the internet"
+for _ in $(seq 60); do curl -fsS -m 5 -o /dev/null https://github.com && break; sleep 5; done
+curl -fsS -m 5 -o /dev/null https://github.com || fail "no internet connection"
+
+# --- the setup: latest stable from GitHub, or the stick's copy ------------------
+SETUP=$SRC/setup
+if [[ -f $INSTALLER_KEY ]]; then
+  say "getting the latest Kids OS setup from GitHub"
+  export GIT_SSH_COMMAND="ssh -i $INSTALLER_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
+  command -v git >/dev/null || apt-get -y install git >/dev/null
+  if [[ ! -d $CHECKOUT/.git ]]; then
+    rm -rf "$CHECKOUT"
+    timeout 300 git clone -q --branch stable "$REPO" "$CHECKOUT"
+  else
+    timeout 120 git -C "$CHECKOUT" fetch -q origin stable && git -C "$CHECKOUT" reset -q --hard origin/stable
+  fi
+  unset GIT_SSH_COMMAND
+  if [[ -f $CHECKOUT/setup/install.sh ]]; then
+    SETUP=$CHECKOUT/setup
+    echo "using stable @ $(git -C "$CHECKOUT" rev-parse --short HEAD)"
+  else
+    echo "couldn't get it; using the copy on the installer stick"
+  fi
+fi
+
+# This script itself may have been fixed on GitHub: switch to the newer copy.
+if [[ -z ${KIDSOS_FIRSTBOOT_UPDATED:-} ]] && ! cmp -s "$SETUP/files/kidsos-firstboot" "$0"; then
+  install -m 755 "$SETUP/files/kidsos-firstboot" /usr/local/sbin/kidsos-firstboot
+  KIDSOS_FIRSTBOOT_UPDATED=1 exec /usr/local/sbin/kidsos-firstboot
+fi
+
+stages() { bash "$SETUP/install.sh" "$@" || fail "setup stages $* failed"; }
+
+say "desktop and accounts (the longest part)"
+stages 10 20
+
+say "Android images from the stick (same version as the parent's tablet)"
+install -d /usr/share/waydroid-extra/images
+cp -u "$SESSION"/images/*.img /usr/share/waydroid-extra/images/
+
+if [[ -f $SESSION/android-data.tar.zst && ! -d /var/lib/tablet-os/android-data ]]; then
+  say "restoring the Android session (apps, Google account, carousel)"
+  install -d -m 755 /var/lib/tablet-os
+  tar --zstd -xpf "$SESSION/android-data.tar.zst" --numeric-owner --xattrs --xattrs-include='*' \
+    -C /var/lib/tablet-os || fail "couldn't restore the Android data"
+fi
+if [[ -f $SESSION/tablet-home.keystore ]]; then
+  # Same signing key, so the restored apps accept updated builds.
+  install -D -m 600 "$SESSION/tablet-home.keystore" /etc/tablet-os/tablet-home.keystore
+fi
+
+say "Android, kid screen, Movies, lockdown, DNS, Claude Code, updates"
+TABLET_BRANCH=stable stages 30 35 36 40 50 60 70 80 90
+
+if [[ -f $SESSION/tablet-movies.json && ! -s /var/lib/tablet-movies/config.json ]]; then
+  say "restoring the Movies settings (Plex sign-in, TV, movie list)"
+  install -m 600 -o tablet-movies -g tablet-movies "$SESSION/tablet-movies.json" /var/lib/tablet-movies/config.json
+  systemctl restart tablet-movies-bridge.service
+fi
+
+touch "$DONE"
+systemctl disable kidsos-firstboot.service
+# The session payload holds sign-ins and the installer key; everything is
+# restored now, so don't keep a copy.
+rm -rf "$SESSION"
+say "done. Restarting into Kids OS"
+echo "Add this read-only deploy key to GitHub (toxiicxmonster/kids-os > Settings > Deploy keys):"
+cat /etc/tablet-os/deploy_key.pub
+sleep 20
+systemctl reboot

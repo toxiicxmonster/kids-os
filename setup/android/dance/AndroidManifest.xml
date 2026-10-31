@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dance: the kid picks Danny Go! songs (one, or a dance party) and they play
+     on the TV through YouTube; the parents choose the songs on the Movies & TV web page. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.tabletos.dance"
+    android:versionCode="3"
+    android:versionName="1.2">
+
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Cleartext only to the host bridge on the private Waydroid network. -->
+    <application
+        android:label="Dance"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar.Fullscreen">
+
+        <activity
+            android:name=".DanceActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

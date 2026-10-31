@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Parent's desktop: open the kid's Android (same apps, same Google account) in
+# parent mode, with the Play Store and the switches for the kid's carousel.
+# The kid's session always switches back to kid mode when it starts.
+#
+# With more than one kid, asks whose tablet: each kid has their own Android
+# (the first kid's in /var/lib/tablet-os/android-data, later ones in
+# android-data-<user>), and the parent's Android data link points at it.
+data_link="$HOME/.local/share/waydroid/data"
+mapfile -t kids < <(getent group kidsos-kids | cut -d: -f4 | tr ',' '\n' | grep . |
+  while read -r k; do getent passwd "$k"; done | sort -t: -k3 -n | cut -d: -f1)
+if (( ${#kids[@]} > 1 )); then
+  rows=()
+  for k in "${kids[@]}"; do
+    rows+=("$k" "$(getent passwd "$k" | cut -d: -f5 | cut -d, -f1)")
+  done
+  kid="$(zenity --list --title="Kid Tablet (parent mode)" --text="Whose tablet?" \
+    --column=user --column=Name --hide-column=1 --print-column=1 --height=320 "${rows[@]}")" || exit 0
+  target=/var/lib/tablet-os/android-data
+  [[ $kid != "${kids[0]}" ]] && target="/var/lib/tablet-os/android-data-$kid"
+  if [[ "$(readlink "$data_link")" != "$target" ]]; then
+    # Android can only switch data while it's stopped.
+    waydroid session stop &>/dev/null
+    ln -sfn "$target" "$data_link"
+  fi
+fi
+
+# Movies & TV and Dance lists are per kid: setup in parent mode edits this kid's.
+curl -s -m 5 -X POST "http://127.0.0.1:8766/api/parent-kid/${kid:-${kids[0]:-kid}}" >/dev/null
+
+if ! waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'; then
+  setsid waydroid session start &>/dev/null &
+  for _ in $(seq 120); do
+    waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING' && break
+    sleep 1
+  done
+fi
+waydroid prop set persist.waydroid.tablet_mode parent
+waydroid show-full-ui

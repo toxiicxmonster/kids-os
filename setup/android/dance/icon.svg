@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Dance app icon: dancing music notes and a star on a pink circle. -->
+  <circle cx="256" cy="256" r="240" fill="#ff7ab8" stroke="#0d47a1" stroke-width="16"/>
+  <g stroke="#0d47a1" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M200 350 L200 160 L360 125 L360 315" fill="none"/>
+    <path d="M200 160 L360 125 L360 175 L200 210 Z" fill="#0d47a1"/>
+    <ellipse cx="170" cy="355" rx="42" ry="32" fill="#ffffff" transform="rotate(-20 170 355)"/>
+    <ellipse cx="330" cy="320" rx="42" ry="32" fill="#ffffff" transform="rotate(-20 330 320)"/>
+  </g>
+  <path d="M120 120 L132 150 L164 152 L139 172 L148 203 L120 186 L92 203 L101 172 L76 152 L108 150 Z"
+        fill="#ffe14d" stroke="#0d47a1" stroke-width="8" stroke-linejoin="round"/>
+  <g stroke="#ffe14d" stroke-width="12" stroke-linecap="round">
+    <path d="M405 210 L440 195"/><path d="M410 250 L448 252"/><path d="M400 290 L432 308"/>
+  </g>
+</svg>

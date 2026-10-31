@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Movies app icon: a cartoon clapperboard on a sky-blue circle. -->
+  <circle cx="256" cy="256" r="240" fill="#4fb3f2" stroke="#0d47a1" stroke-width="16"/>
+  <g transform="rotate(-12 150 190)">
+    <rect x="108" y="150" width="300" height="70" rx="14" fill="#fff" stroke="#0d47a1" stroke-width="14"/>
+    <path d="M150 157 L190 157 L160 213 L120 213 Z M240 157 L280 157 L250 213 L210 213 Z M330 157 L370 157 L340 213 L300 213 Z" fill="#0d47a1"/>
+  </g>
+  <rect x="110" y="230" width="300" height="170" rx="20" fill="#ff5252" stroke="#0d47a1" stroke-width="14"/>
+  <path d="M225 275 L225 355 L295 315 Z" fill="#fff" stroke="#0d47a1" stroke-width="10" stroke-linejoin="round"/>
+  <circle cx="160" cy="370" r="10" fill="#ffd600"/>
+  <circle cx="360" cy="370" r="10" fill="#ffd600"/>
+</svg>

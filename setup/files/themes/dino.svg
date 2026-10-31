@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <!-- Kids OS theme "Dinosaurs": jungle greens, leaves, volcano, a friendly dino. Middle kept clear. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bff0a8"/>
+      <stop offset="0.6" stop-color="#8fdc7a"/>
+      <stop offset="1" stop-color="#5cbf5a"/>
+    </linearGradient>
+    <g id="leaf">
+      <path d="M0 0 Q90 -70 200 0 Q90 70 0 0 Z" fill="#3fa84f" stroke="#2a7f39" stroke-width="8" stroke-linejoin="round"/>
+      <path d="M10 0 L185 0" stroke="#2a7f39" stroke-width="6" stroke-linecap="round"/>
+    </g>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+
+  <!-- volcano, top right -->
+  <path d="M1460 460 L1620 200 L1720 200 L1880 460 Z" fill="#a0785a" stroke="#7a5638" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M1620 200 Q1640 240 1670 215 Q1700 245 1720 200" fill="#ff7a3d"/>
+  <g fill="#ffffff" opacity="0.9">
+    <circle cx="1680" cy="150" r="40"/><circle cx="1720" cy="100" r="50"/><circle cx="1650" cy="80" r="34"/>
+  </g>
+
+  <!-- ground -->
+  <path d="M0 960 Q300 920 640 955 Q1000 990 1340 950 Q1660 915 1920 950 L1920 1080 L0 1080 Z" fill="#4fae4c" stroke="#3a8a3a" stroke-width="8"/>
+
+  <!-- leaves hanging from the top corners -->
+  <use href="#leaf" transform="translate(-20 40) rotate(20)"/>
+  <use href="#leaf" transform="translate(-30 160) rotate(35) scale(0.9)"/>
+  <use href="#leaf" transform="translate(60 -20) rotate(55) scale(0.8)"/>
+  <use href="#leaf" transform="translate(1940 40) rotate(160)"/>
+  <use href="#leaf" transform="translate(1950 170) rotate(145) scale(0.85)"/>
+
+  <!-- palm, bottom left -->
+  <path d="M190 980 Q170 820 210 690" fill="none" stroke="#a0785a" stroke-width="34" stroke-linecap="round"/>
+  <use href="#leaf" transform="translate(210 690) rotate(-150)"/>
+  <use href="#leaf" transform="translate(210 690) rotate(-30)"/>
+  <use href="#leaf" transform="translate(210 690) rotate(-95) scale(0.9)"/>
+
+  <!-- friendly dino, bottom right -->
+  <g transform="translate(1500 950)" stroke="#2a7f8f" stroke-width="10" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M-170 -40 Q-260 -30 -300 -90 Q-230 -60 -160 -90 Z" fill="#5cc6d9"/>
+    <path d="M-170 -10 Q-190 -150 -40 -160 Q90 -170 110 -60 Q120 -10 60 0 L-140 0 Q-170 0 -170 -10 Z" fill="#5cc6d9"/>
+    <path d="M60 -120 Q80 -260 160 -270 Q240 -275 240 -210 Q240 -160 170 -160 Q120 -160 110 -90 Z" fill="#5cc6d9"/>
+    <path d="M-120 0 L-120 40 M-40 0 L-40 40 M20 0 L20 40" fill="none" stroke-width="30"/>
+    <g fill="#ffcf3f">
+      <path d="M-120 -150 L-100 -195 L-75 -158 Z"/><path d="M-60 -162 L-35 -210 L-10 -165 Z"/><path d="M5 -158 L35 -200 L50 -150 Z"/>
+    </g>
+    <circle cx="190" cy="-225" r="14" fill="#1d2733" stroke="none"/>
+    <circle cx="186" cy="-230" r="5" fill="#ffffff" stroke="none"/>
+    <path d="M195 -185 Q215 -175 232 -190" fill="none" stroke="#1d2733" stroke-width="7"/>
+  </g>
+
+  <!-- footprints and an egg -->
+  <g fill="#3a8a3a" opacity="0.5">
+    <ellipse cx="700" cy="1010" rx="26" ry="16"/><ellipse cx="820" cy="1030" rx="26" ry="16"/><ellipse cx="940" cy="1010" rx="26" ry="16"/>
+  </g>
+  <ellipse cx="420" cy="980" rx="48" ry="62" fill="#fff6dc" stroke="#e0c98a" stroke-width="8"/>
+  <circle cx="405" cy="965" r="9" fill="#9fd36b"/><circle cx="435" cy="995" r="11" fill="#9fd36b"/>
+</svg>

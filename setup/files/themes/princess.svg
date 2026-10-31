@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <!-- Kids OS theme "Princess": pink sky, a castle, hearts, sparkles and a rainbow. Middle kept clear. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7a8d8"/>
+      <stop offset="0.6" stop-color="#fcc8e6"/>
+      <stop offset="1" stop-color="#ffe3f2"/>
+    </linearGradient>
+    <g id="heart">
+      <path d="M0 30 Q-60 -10 -40 -40 Q-20 -60 0 -35 Q20 -60 40 -40 Q60 -10 0 30 Z" fill="#ff6fae" stroke="#e0458a" stroke-width="6" stroke-linejoin="round"/>
+    </g>
+    <g id="sparkle">
+      <path d="M0 -26 Q4 -4 26 0 Q4 4 0 26 Q-4 4 -26 0 Q-4 -4 0 -26 Z" fill="#fff6a8"/>
+    </g>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+
+  <!-- rainbow, top left -->
+  <g fill="none" stroke-width="34" transform="translate(240 470)">
+    <path d="M-330 0 A330 330 0 0 1 330 0" stroke="#ff6b6b"/>
+    <path d="M-296 0 A296 296 0 0 1 296 0" stroke="#ffb347"/>
+    <path d="M-262 0 A262 262 0 0 1 262 0" stroke="#ffe14d"/>
+    <path d="M-228 0 A228 228 0 0 1 228 0" stroke="#7bd86f"/>
+    <path d="M-194 0 A194 194 0 0 1 194 0" stroke="#6cb8ff"/>
+    <path d="M-160 0 A160 160 0 0 1 160 0" stroke="#b28cff"/>
+  </g>
+
+  <!-- hill -->
+  <path d="M0 980 Q480 900 960 960 Q1440 1020 1920 930 L1920 1080 L0 1080 Z" fill="#b6e6a0" stroke="#86c873" stroke-width="8"/>
+
+  <!-- castle, bottom right -->
+  <g transform="translate(1600 960)" stroke="#c9619b" stroke-width="8" stroke-linejoin="round">
+    <rect x="-180" y="-260" width="360" height="260" fill="#ffd6ec"/>
+    <rect x="-260" y="-340" width="110" height="340" fill="#ffc2e2"/>
+    <rect x="150" y="-340" width="110" height="340" fill="#ffc2e2"/>
+    <rect x="-55" y="-400" width="110" height="140" fill="#ffc2e2"/>
+    <path d="M-275 -340 L-205 -450 L-135 -340 Z" fill="#b28cff"/>
+    <path d="M135 -340 L205 -450 L275 -340 Z" fill="#b28cff"/>
+    <path d="M-70 -400 L0 -510 L70 -400 Z" fill="#b28cff"/>
+    <path d="M0 -510 L0 -560 L45 -545 L0 -530" fill="#ff6fae"/>
+    <path d="M-50 0 L-50 -90 Q0 -150 50 -90 L50 0 Z" fill="#c9619b"/>
+    <rect x="-225" y="-280" width="40" height="55" rx="20" fill="#fff6dc"/>
+    <rect x="185" y="-280" width="40" height="55" rx="20" fill="#fff6dc"/>
+    <rect x="-20" y="-370" width="40" height="55" rx="20" fill="#fff6dc"/>
+  </g>
+
+  <!-- hearts and sparkles around the edges -->
+  <use href="#heart" transform="translate(1250 150) scale(1.1)"/>
+  <use href="#heart" transform="translate(1720 230) scale(0.8)"/>
+  <use href="#heart" transform="translate(150 760) scale(0.9)"/>
+  <use href="#heart" transform="translate(760 1010) scale(0.7)"/>
+  <use href="#sparkle" transform="translate(1000 90)"/>
+  <use href="#sparkle" transform="translate(1500 380) scale(0.8)"/>
+  <use href="#sparkle" transform="translate(620 160) scale(1.2)"/>
+  <use href="#sparkle" transform="translate(330 960) scale(0.9)"/>
+  <use href="#sparkle" transform="translate(1180 1000) scale(0.8)"/>
+  <use href="#sparkle" transform="translate(1860 620) scale(0.7)"/>
+</svg>

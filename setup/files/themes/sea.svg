@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <!-- Kids OS theme "Under the sea": ocean blues, fish, bubbles, seaweed. Middle kept clear. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3fd0e8"/>
+      <stop offset="0.55" stop-color="#1e9fd0"/>
+      <stop offset="1" stop-color="#0d6aa8"/>
+    </linearGradient>
+    <g id="fish">
+      <path d="M-70 0 Q-20 -55 50 0 Q-20 55 -70 0 Z" stroke-width="8" stroke-linejoin="round"/>
+      <path d="M45 0 L95 -38 L90 0 L95 38 Z" stroke-width="8" stroke-linejoin="round"/>
+      <circle cx="-38" cy="-8" r="9" fill="#1d2733" stroke="none"/>
+      <circle cx="-41" cy="-11" r="3" fill="#ffffff" stroke="none"/>
+    </g>
+    <g id="bubble">
+      <circle r="18" fill="#ffffff" fill-opacity="0.25" stroke="#e8fbff" stroke-width="5"/>
+      <circle cx="-6" cy="-6" r="4" fill="#ffffff"/>
+    </g>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+
+  <!-- light rays from the surface -->
+  <g fill="#ffffff" opacity="0.10">
+    <path d="M200 0 L320 0 L120 1080 L0 1080 Z"/>
+    <path d="M820 0 L900 0 L760 1080 L640 1080 Z"/>
+    <path d="M1500 0 L1600 0 L1520 1080 L1380 1080 Z"/>
+  </g>
+
+  <!-- sandy floor with seaweed and coral -->
+  <path d="M0 990 Q240 940 480 985 Q760 1035 1020 980 Q1300 930 1560 985 Q1760 1025 1920 975 L1920 1080 L0 1080 Z" fill="#f7d98b" stroke="#e0b75a" stroke-width="8"/>
+  <g fill="none" stroke="#3fbf6b" stroke-width="22" stroke-linecap="round">
+    <path d="M110 990 Q70 900 120 830 Q170 760 120 680"/>
+    <path d="M170 995 Q210 920 170 860"/>
+    <path d="M1780 985 Q1820 900 1770 820 Q1720 740 1770 660"/>
+    <path d="M1720 990 Q1690 930 1725 880"/>
+  </g>
+  <g fill="#ff7a8a" stroke="#e0516a" stroke-width="8" stroke-linejoin="round">
+    <path d="M520 990 L520 920 Q490 880 505 850 M520 930 Q560 890 545 850" fill="none" stroke-width="22" stroke-linecap="round"/>
+    <path d="M1380 980 L1380 910 Q1350 870 1365 835 M1380 920 Q1420 880 1405 845" fill="none" stroke-width="22" stroke-linecap="round"/>
+  </g>
+  <!-- starfish -->
+  <path transform="translate(900 1015) scale(1.1)" d="M0 -40 L11 -12 L40 -12 L17 6 L26 34 L0 17 L-26 34 L-17 6 L-40 -12 L-11 -12 Z" fill="#ffb347" stroke="#e5862a" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- fish around the edges -->
+  <use href="#fish" transform="translate(260 200)" fill="#ffcf3f" stroke="#e5a52a"/>
+  <use href="#fish" transform="translate(1600 160) scale(-1 1)" fill="#ff7a8a" stroke="#e0516a"/>
+  <use href="#fish" transform="translate(1700 560) scale(-0.7 0.7)" fill="#9b7bff" stroke="#7357e0"/>
+  <use href="#fish" transform="translate(150 600) scale(0.65)" fill="#5bd18b" stroke="#2f9e63"/>
+  <use href="#fish" transform="translate(1100 110) scale(0.55)" fill="#ff9f43" stroke="#e5732a"/>
+
+  <!-- bubbles -->
+  <use href="#bubble" transform="translate(420 140)"/>
+  <use href="#bubble" transform="translate(450 80) scale(0.7)"/>
+  <use href="#bubble" transform="translate(1450 300) scale(1.2)"/>
+  <use href="#bubble" transform="translate(1480 230) scale(0.8)"/>
+  <use href="#bubble" transform="translate(320 760) scale(0.9)"/>
+  <use href="#bubble" transform="translate(1600 820)"/>
+  <use href="#bubble" transform="translate(760 70) scale(0.6)"/>
+</svg>

@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <!-- Cartoon blue sky: background for the login screen and the kid's carousel. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f9be8"/>
+      <stop offset="0.6" stop-color="#6cc4f5"/>
+      <stop offset="1" stop-color="#b8e6fc"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff6a8" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#fff6a8" stop-opacity="0"/>
+    </radialGradient>
+    <!-- One fluffy cloud, about 400 x 170, origin at its bottom-left. -->
+    <g id="cloud">
+      <g fill="#ffffff" stroke="#9fd3f2" stroke-width="10" stroke-linejoin="round">
+        <path d="M40 0 Q-10 0 10 -45 Q20 -95 85 -85 Q100 -150 175 -140 Q215 -185 275 -150
+                 Q345 -165 350 -95 Q410 -85 395 -35 Q395 0 345 0 Z"/>
+      </g>
+      <!-- soft shading along the bottom -->
+      <path d="M40 -6 Q15 -6 22 -28 Q120 -10 360 -30 Q385 -12 345 -6 Z" fill="#e3f4fd"/>
+      <!-- highlights -->
+      <path d="M95 -95 Q110 -125 150 -122" fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round" opacity="0.9"/>
+    </g>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#sky)"/>
+
+  <!-- sun -->
+  <circle cx="1680" cy="190" r="230" fill="url(#glow)"/>
+  <g transform="translate(1680 190)" stroke="#ffcf3f" stroke-width="18" stroke-linecap="round">
+    <line x1="0" y1="-150" x2="0" y2="-115"/>
+    <line x1="0" y1="150" x2="0" y2="115"/>
+    <line x1="-150" y1="0" x2="-115" y2="0"/>
+    <line x1="150" y1="0" x2="115" y2="0"/>
+    <line x1="-106" y1="-106" x2="-81" y2="-81"/>
+    <line x1="106" y1="106" x2="81" y2="81"/>
+    <line x1="-106" y1="106" x2="-81" y2="81"/>
+    <line x1="106" y1="-106" x2="81" y2="-81"/>
+  </g>
+  <circle cx="1680" cy="190" r="90" fill="#ffe14d" stroke="#ffbf1f" stroke-width="10"/>
+  <circle cx="1650" cy="165" r="22" fill="#fff3a0" opacity="0.8"/>
+
+  <!-- clouds: mostly along the top and bottom so the middle stays clear -->
+  <use href="#cloud" transform="translate(90 250) scale(0.9)"/>
+  <use href="#cloud" transform="translate(620 170) scale(0.6)"/>
+  <use href="#cloud" transform="translate(1080 300) scale(0.75)"/>
+  <use href="#cloud" transform="translate(-60 1010) scale(1.3)"/>
+  <use href="#cloud" transform="translate(520 1060) scale(1.1)"/>
+  <use href="#cloud" transform="translate(1020 1000) scale(1.25)"/>
+  <use href="#cloud" transform="translate(1500 1070) scale(1.2)"/>
+  <use href="#cloud" transform="translate(1640 700) scale(0.5)"/>
+  <use href="#cloud" transform="translate(140 640) scale(0.45)"/>
+</svg>

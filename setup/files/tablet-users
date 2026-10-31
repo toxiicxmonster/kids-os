@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Kids OS "Users" app for the parent's desktop: everyone's name and theme,
+add or remove kids, change the parent password. Account changes go through
+`pkexec tablet-users-admin` (asks for the parent password once); themes are
+kept by the Movies & TV bridge, which the kids' tablets read them from."""
+import grp
+import json
+import os
+import pwd
+import subprocess
+import threading
+import urllib.request
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
+
+THEMES = [("sky", "☁️  Blue sky"), ("space", "🚀  Outer space"), ("sea", "🐠  Under the sea"),
+          ("dino", "🦕  Dinosaurs"), ("trucks", "🚧  Trucks"), ("princess", "🏰  Princess"),
+          ("unicorn", "🦄  Unicorn"), ("fairy", "🌸  Fairy garden"), ("mermaid", "🧜  Mermaid"),
+          ("sweets", "🍭  Sweets")]
+BRIDGE = "http://127.0.0.1:8766/api"
+ADMIN = "/usr/local/sbin/tablet-users-admin"
+WALLPAPERS = "/usr/share/tablet-os/themes"
+KIDS_GROUP = "kidsos-kids"
+
+
+def bridge(method, path):
+    req = urllib.request.Request(BRIDGE + path, method=method)
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def people():
+    """Parent first, then the kids oldest first, each with name and theme."""
+    try:
+        chosen = bridge("GET", "/themes")["themes"]
+    except OSError:
+        chosen = {}
+    parent = pwd.getpwuid(os.getuid())
+    name = lambda p: (p.pw_gecos.split(",")[0] or p.pw_name).strip()
+    out = [{"user": parent.pw_name, "name": name(parent), "role": "parent",
+            "theme": chosen.get(parent.pw_name, "sky")}]
+    try:
+        members = grp.getgrnam(KIDS_GROUP).gr_mem
+    except KeyError:
+        members = []
+    kids = sorted((pwd.getpwnam(m) for m in members), key=lambda p: p.pw_uid)
+    for i, p in enumerate(kids):
+        out.append({"user": p.pw_name, "name": name(p), "role": "kid", "first": i == 0,
+                    "theme": chosen.get(p.pw_name, "sky")})
+    return out
+
+
+class UsersWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Users", default_width=620, default_height=760)
+        self.toasts = Adw.ToastOverlay()
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(self.toasts)
+        self.set_content(view)
+        self.reload()
+
+    # ---- helpers -----------------------------------------------------------
+
+    def toast(self, text):
+        self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
+
+    def admin(self, args, done, stdin=None):
+        """Runs tablet-users-admin via pkexec off the main thread; done(ok, output)."""
+        def work():
+            r = subprocess.run(["pkexec", ADMIN, *args], input=stdin, capture_output=True, text=True)
+            msg = (r.stdout if r.returncode == 0 else (r.stderr.strip().splitlines() or ["cancelled"])[-1])
+            GLib.idle_add(done, r.returncode == 0, msg)
+        threading.Thread(target=work, daemon=True).start()
+
+    def reload(self):
+        page = Adw.PreferencesPage()
+        for person in people():
+            page.add(self.person_group(person))
+        add = Gtk.Button(label="➕  Add a kid", halign=Gtk.Align.CENTER, margin_top=6)
+        add.add_css_class("suggested-action")
+        add.add_css_class("pill")
+        add.connect("clicked", lambda *_: self.add_kid())
+        group = Adw.PreferencesGroup()
+        group.add(add)
+        page.add(group)
+        self.toasts.set_child(page)
+
+    # ---- one person ----------------------------------------------------------
+
+    def person_group(self, person):
+        parent = person["role"] == "parent"
+        group = Adw.PreferencesGroup(title=("👤  " if parent else "🧒  ") + person["name"],
+                                     description="Parent (this desktop)" if parent else "Kid")
+        name = Adw.EntryRow(title="Name", text=person["name"], show_apply_button=True)
+        name.connect("apply", lambda row: self.rename(person, row.get_text()))
+        group.add(name)
+
+        theme = Adw.ComboRow(title="Theme", subtitle="Desktop picture" if parent else
+                             "Their tablet's background (they can change it too)")
+        theme.set_model(Gtk.StringList.new([label for _, label in THEMES]))
+        keys = [key for key, _ in THEMES]
+        theme.set_selected(keys.index(person["theme"]) if person["theme"] in keys else 0)
+        theme.connect("notify::selected", lambda row, _: self.set_theme(person, keys[row.get_selected()]))
+        group.add(theme)
+
+        if parent:
+            row = Adw.ActionRow(title="Password", subtitle="For this desktop and the login screen")
+            button = Gtk.Button(label="Change…", valign=Gtk.Align.CENTER)
+            button.connect("clicked", lambda *_: self.change_password())
+            row.add_suffix(button)
+            group.add(row)
+        elif not person.get("first"):
+            row = Adw.ActionRow(title="Remove", subtitle="Deletes their tablet, apps and game progress")
+            button = Gtk.Button(label="Remove…", valign=Gtk.Align.CENTER)
+            button.add_css_class("destructive-action")
+            button.connect("clicked", lambda *_: self.remove_kid(person))
+            row.add_suffix(button)
+            group.add(row)
+        return group
+
+    def rename(self, person, name):
+        name = name.strip()
+        if not name or name == person["name"]:
+            return
+
+        def done(ok, msg):
+            self.toast(f"Renamed to {name}" if ok else f"Couldn't rename: {msg}")
+            self.reload()
+        self.admin(["rename", person["user"], name], done)
+
+    def set_theme(self, person, theme):
+        try:
+            bridge("POST", f"/themes/{person['user']}/{theme}")
+        except OSError as e:
+            self.toast(f"Couldn't save the theme: {e}")
+            return
+        if person["role"] == "parent":
+            uri = f"file://{WALLPAPERS}/{theme}.png"
+            for key in ("picture-uri", "picture-uri-dark"):
+                subprocess.run(["gsettings", "set", "org.gnome.desktop.background", key, uri])
+        self.toast(f"{person['name']}'s theme: {dict(THEMES)[theme].split('  ')[1]}")
+
+    # ---- dialogs ---------------------------------------------------------------
+
+    def add_kid(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        entry = Gtk.Entry(placeholder_text="Their name")
+        themes = Gtk.DropDown.new_from_strings([label for _, label in THEMES])
+        box.append(entry)
+        box.append(themes)
+        dialog = Adw.AlertDialog(heading="Add a kid",
+                                 body="They get their own tablet: a copy of the first kid's apps, "
+                                      "with their own game progress and theme.")
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("add", "Add")
+        dialog.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
+
+        def response(_, answer):
+            name = entry.get_text().strip()
+            if answer != "add" or not name:
+                return
+            theme = THEMES[themes.get_selected()][0]
+            self.toast(f"Setting up {name}'s tablet (about a minute)…")
+
+            def done(ok, msg):
+                if ok:
+                    user = json.loads(msg.strip().splitlines()[-1])["user"]
+                    try:
+                        bridge("POST", f"/themes/{user}/{theme}")
+                    except OSError:
+                        pass
+                    self.toast(f"{name} is ready. They'll be on the login screen after "
+                               "you go back to Kids OS.")
+                else:
+                    self.toast(f"Couldn't add {name}: {msg}")
+                self.reload()
+            self.admin(["add-kid", name], done)
+        dialog.connect("response", response)
+        dialog.present(self)
+
+    def remove_kid(self, person):
+        dialog = Adw.AlertDialog(heading=f"Remove {person['name']}?",
+                                 body="Their tablet, apps and game progress are deleted. "
+                                      "This can't be undone.")
+        dialog.add_response("cancel", "Keep")
+        dialog.add_response("remove", "Remove")
+        dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def response(_, answer):
+            if answer != "remove":
+                return
+
+            def done(ok, msg):
+                self.toast(f"Removed {person['name']}" if ok else f"Couldn't remove: {msg}")
+                self.reload()
+            self.admin(["remove-kid", person["user"]], done)
+        dialog.connect("response", response)
+        dialog.present(self)
+
+    def change_password(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        new = Gtk.PasswordEntry(placeholder_text="New password", show_peek_icon=True)
+        again = Gtk.PasswordEntry(placeholder_text="Type it again", show_peek_icon=True)
+        box.append(new)
+        box.append(again)
+        dialog = Adw.AlertDialog(heading="Change the parent password",
+                                 body="You'll be asked for the current one first.")
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("change", "Change")
+        dialog.set_response_appearance("change", Adw.ResponseAppearance.SUGGESTED)
+
+        def response(_, answer):
+            if answer != "change":
+                return
+            if new.get_text() != again.get_text():
+                self.toast("The two passwords didn't match")
+                return
+            if len(new.get_text()) < 4:
+                self.toast("Use at least 4 characters")
+                return
+            self.admin(["set-password"], lambda ok, msg: self.toast(
+                "Password changed" if ok else f"Couldn't change it: {msg}"), stdin=new.get_text() + "\n")
+        dialog.connect("response", response)
+        dialog.present(self)
+
+
+def main():
+    app = Adw.Application(application_id="org.kidsos.Users")
+    app.connect("activate", lambda a: (a.get_active_window() or UsersWindow(a)).present())
+    app.run(None)
+
+
+if __name__ == "__main__":
+    main()

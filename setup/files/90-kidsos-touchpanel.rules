@@ -1,0 +1,10 @@
+# Kids OS: the Dell's touch monitor (HID TOUCH "HID Touch Panel", 1ddb:0001).
+# The kernel's generic HID driver exposes it as a pen "Stylus" with no axis
+# resolution, and libinput ignores such a tablet ("missing tablet capabilities:
+# resolution"), so taps never reach the kid session. It's a single-finger
+# touchscreen (direct, BTN_TOUCH + absolute X/Y): classify it as one.
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1ddb", ATTRS{idProduct}=="0001", ENV{ID_INPUT_TABLET}=="1", ENV{ID_INPUT_TABLET}="", ENV{ID_INPUT_TABLET_PAD}="", ENV{ID_INPUT_TOUCHSCREEN}="1"
+# Its touches also "lift" for ~20-35 ms mid-drag, turning drags into taps:
+# tablet-touch-debounce re-emits it as a clean "Kids OS touchscreen" (started
+# here too, so it follows the panel being unplugged and plugged back in).
+ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1ddb", ATTRS{idProduct}=="0001", ENV{ID_INPUT_TOUCHSCREEN}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="tablet-touch-debounce.service"

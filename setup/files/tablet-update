@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Boot-time updater: pulls this box's branch of the private kids-os repo and
+# re-runs only the setup stages whose files changed. Runs before the login
+# screen (tablet-update.service). Never blocks booting: no network, no GitHub,
+# or a failed stage just means the box starts on what it already has.
+#
+# Settings: /etc/tablet-os/update.conf (REPO, BRANCH, PARENT_USER)
+# Read-only deploy key: /etc/tablet-os/deploy_key
+set -uo pipefail
+
+CONF=/etc/tablet-os/update.conf
+KEY=/etc/tablet-os/deploy_key
+CHECKOUT=/opt/kids-os
+# shellcheck source=/dev/null
+source "$CONF"
+export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
+
+log() { echo "tablet-update: $*"; }
+# The parents' web page shows the last check: "<epoch> <commit> <result>".
+record() {
+  install -d /var/lib/tablet-os
+  echo "$(date +%s) $(git -C "$CHECKOUT" rev-parse --short HEAD 2>/dev/null || echo none) $1" \
+    > /var/lib/tablet-os/last-update
+}
+# A line on the Kids OS boot splash, so a long update doesn't look frozen.
+splash() { plymouth --ping 2>/dev/null && plymouth display-message --text="$1"; true; }
+
+if [[ ! -d $CHECKOUT/.git ]]; then
+  timeout 120 git clone --branch "$BRANCH" "$REPO" "$CHECKOUT" || { log "clone failed; skipping"; exit 0; }
+  log "cloned $BRANCH at $(git -C "$CHECKOUT" rev-parse --short HEAD)"
+  exit 0  # a fresh checkout matches what's installed (it was set up from this code)
+fi
+
+cd "$CHECKOUT" || exit 0
+# One run at a time: a manual run waits for the boot-time one instead of
+# seeing an already-moved checkout and reporting "up to date".
+exec 9>/run/tablet-update.lock
+flock 9
+# Stages that didn't finish last time (failed, or interrupted by a reboot or
+# power cut) are re-run until they succeed: the checkout has already moved on,
+# so a later diff wouldn't include them again.
+PENDING=/var/lib/tablet-os/update-pending-stages
+mapfile -t stages < <(cat "$PENDING" 2>/dev/null)
+old="$(git rev-parse HEAD)"
+if ! timeout 60 git fetch --quiet origin "$BRANCH"; then
+  log "can't reach GitHub; starting on $(git rev-parse --short HEAD)"
+  [[ ${#stages[@]} -eq 0 ]] && { record offline; exit 0; }
+  new="$old"
+else
+  new="$(git rev-parse "origin/$BRANCH")"
+fi
+if [[ $old == "$new" && ${#stages[@]} -eq 0 ]]; then
+  log "up to date at $(git rev-parse --short HEAD)"
+  record up-to-date
+  exit 0
+fi
+
+changed="$(git diff --name-only "$old" "$new")"
+git reset --quiet --hard "$new"
+[[ $old != "$new" ]] && log "updated $(git rev-parse --short "$old") -> $(git rev-parse --short "$new")"
+[[ ${#stages[@]} -gt 0 ]] && log "retrying stages that failed last time: ${stages[*]}"
+
+# Which stages to re-run: changed stage scripts themselves, the stages that
+# install a changed file, and stage 35 for any Android app change.
+while read -r path; do
+  case "$path" in
+    setup/stages/*.sh)
+      stages+=("$(basename "$path" | cut -c1-2)") ;;
+    setup/android/*|setup/files/themes/*)  # the themes are built into the apps
+      stages+=(35) ;;
+    setup/files/*)
+      for s in $(grep -l "files/$(basename "$path")" setup/stages/*.sh); do
+        stages+=("$(basename "$s" | cut -c1-2)")
+      done ;;
+  esac
+done <<< "$changed"
+mapfile -t stages < <(printf '%s\n' "${stages[@]}" | grep . | sort -u)
+
+if [[ ${#stages[@]} -eq 0 ]]; then
+  log "no setup stages affected"
+  record updated
+  exit 0
+fi
+log "re-running stages: ${stages[*]}"
+splash "Updating Kids OS... please wait, don't turn it off"
+trap 'splash ""' EXIT
+started=$SECONDS
+# Recorded before running, cleared only on success: an interrupted run is retried.
+install -d /var/lib/tablet-os
+printf '%s\n' "${stages[@]}" > "$PENDING"
+sync "$PENDING"
+if PARENT_USER="$PARENT_USER" bash setup/install.sh "${stages[@]}"; then
+  rm -f "$PENDING"
+  log "update applied in $((SECONDS - started))s"
+  record updated
+else
+  record stage-failed
+  log "a stage failed after $((SECONDS - started))s; will retry ${stages[*]} next time;" \
+    "see /var/log/tablet-os-setup.log (starting anyway)"
+fi
+exit 0

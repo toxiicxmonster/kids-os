@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <!-- Kids OS theme "Outer space": night sky, planets, a rocket. Middle kept clear. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#14104a"/>
+      <stop offset="0.6" stop-color="#2b2386"/>
+      <stop offset="1" stop-color="#4a3bb5"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#9fe7ff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#9fe7ff" stop-opacity="0"/>
+    </radialGradient>
+    <g id="star">
+      <path d="M0 -24 L7 -7 L24 0 L7 7 L0 24 L-7 7 L-24 0 L-7 -7 Z" fill="#fff7c2"/>
+    </g>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+
+  <!-- little stars -->
+  <g fill="#ffffff" opacity="0.85">
+    <circle cx="120" cy="90" r="4"/><circle cx="340" cy="210" r="3"/><circle cx="560" cy="70" r="5"/>
+    <circle cx="820" cy="150" r="3"/><circle cx="1040" cy="60" r="4"/><circle cx="1260" cy="190" r="3"/>
+    <circle cx="1480" cy="100" r="5"/><circle cx="1880" cy="420" r="4"/><circle cx="60" cy="520" r="3"/>
+    <circle cx="260" cy="880" r="4"/><circle cx="700" cy="980" r="3"/><circle cx="980" cy="900" r="5"/>
+    <circle cx="1300" cy="1010" r="3"/><circle cx="1560" cy="880" r="4"/><circle cx="1820" cy="980" r="3"/>
+    <circle cx="460" cy="440" r="2"/><circle cx="1500" cy="420" r="2"/><circle cx="1720" cy="620" r="3"/>
+  </g>
+  <use href="#star" transform="translate(250 330) scale(1.1)"/>
+  <use href="#star" transform="translate(1150 120) scale(0.8)"/>
+  <use href="#star" transform="translate(1690 300) scale(0.9)"/>
+  <use href="#star" transform="translate(470 960) scale(0.7)"/>
+  <use href="#star" transform="translate(1440 960) scale(1)"/>
+
+  <!-- ringed planet, top right -->
+  <circle cx="1650" cy="210" r="240" fill="url(#glow)"/>
+  <circle cx="1650" cy="210" r="120" fill="#ff9f43" stroke="#e5732a" stroke-width="10"/>
+  <path d="M1560 170 Q1650 140 1740 175" fill="none" stroke="#ffc37a" stroke-width="16" stroke-linecap="round" opacity="0.8"/>
+  <path d="M1570 250 Q1660 230 1735 262" fill="none" stroke="#e5732a" stroke-width="12" stroke-linecap="round" opacity="0.6"/>
+  <ellipse cx="1650" cy="215" rx="230" ry="55" fill="none" stroke="#ffe08a" stroke-width="16" transform="rotate(-14 1650 215)"/>
+
+  <!-- small green planet, bottom left -->
+  <circle cx="170" cy="1000" r="170" fill="#5bd18b" stroke="#2f9e63" stroke-width="10"/>
+  <circle cx="110" cy="950" r="28" fill="#2f9e63" opacity="0.6"/>
+  <circle cx="230" cy="1030" r="40" fill="#2f9e63" opacity="0.5"/>
+  <circle cx="170" cy="880" r="18" fill="#2f9e63" opacity="0.5"/>
+
+  <!-- moon, bottom right -->
+  <circle cx="1780" cy="960" r="110" fill="#e9e7f5" stroke="#b9b4d9" stroke-width="10"/>
+  <circle cx="1745" cy="930" r="22" fill="#c9c4e6"/>
+  <circle cx="1815" cy="990" r="30" fill="#c9c4e6"/>
+
+  <!-- rocket, top left, flying up and right -->
+  <g transform="translate(330 250) rotate(40)">
+    <path d="M-20 70 Q0 140 20 70 Z" fill="#ffcf3f"/>
+    <path d="M-10 70 Q0 115 10 70 Z" fill="#ff6b3d"/>
+    <path d="M-45 40 L-45 75 L-20 55 Z" fill="#e8434d"/>
+    <path d="M45 40 L45 75 L20 55 Z" fill="#e8434d"/>
+    <path d="M0 -110 Q48 -60 40 60 L-40 60 Q-48 -60 0 -110 Z" fill="#ffffff" stroke="#b9c3d6" stroke-width="8"/>
+    <path d="M0 -110 Q30 -80 36 -50 L-36 -50 Q-30 -80 0 -110 Z" fill="#e8434d"/>
+    <circle cx="0" cy="0" r="22" fill="#5bc6f5" stroke="#3a7fc0" stroke-width="8"/>
+  </g>
+</svg>

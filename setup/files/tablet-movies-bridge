@@ -1,0 +1,1603 @@
+#!/usr/bin/env python3
+"""Kids OS Movies bridge: plays approved Plex movies on the chosen Roku TV.
+
+Netflix titles can go on the list too: they open in the Netflix app on the
+Roku (ECP deep link), in whichever Netflix profile was used last on that TV,
+and get rewound to the start if Netflix resumes partway in.
+
+Runs on the Linux host because Android (Waydroid) sits behind NAT and can't
+discover TVs on the home network, and so the Plex account token never enters
+the kid's Android. The Movies app talks to it over HTTP at the host's Waydroid
+address (192.168.240.1:8766).
+
+Kid endpoints (anyone on the Waydroid network):
+  GET  /api/movies              approved movies
+  GET  /api/poster/<key>        poster image
+  POST /api/play/<key>          play from the beginning on the TV, if it's on
+  GET  /api/theme               the logged-in kid's theme; POST /api/theme/<name> sets it
+  GET  /api/dance               the Dance app's songs; GET /api/dance-thumb/<id> a picture
+  POST /api/dance-play/<id,...> play the songs on the TV (YouTube), one after another
+  GET  /api/allowed             may the logged-in kid use the tablet now (bedtime/limits)
+  POST /api/activity?title=     the kid opened an app (for the parents' history)
+Lists, schedules and history are per kid (the kidsos-kids group); kid routes use
+the kid logged in on the screen, parent routes ?kid=<user> (default: the kid whose
+tablet the parent last opened in parent mode, see POST /api/parent-kid/<user>).
+Parent endpoints (only while the parent is logged in on the desktop, or from
+the host itself):
+  GET  /api/setup               current settings
+  POST /api/link                start linking a Plex account (returns a code)
+  GET  /api/link                has the code been entered yet?
+  GET  /api/profiles            Plex Home profiles
+  POST /api/profile/<id>        use this profile for playback
+  GET  /api/tvs                 Roku TVs on the network
+  POST /api/tv/<serial>         use this TV
+  GET  /api/library?q=          movies the profile can see
+  POST/DELETE /api/movies/<key> add/remove an approved movie
+  POST /api/netflix/<id>        add a Netflix title (the number in its netflix.com/title/ link)
+  POST /api/portal-pin          set the web portal PIN ({"pin": "1234"})
+  GET  /api/themes              everyone's theme; POST /api/themes/<user>/<name> sets one
+Web portal for the parents' phones (home network only, PIN-protected):
+  GET  /                        the portal page
+  POST /api/portal/login        {"pin": ...}; sets a session cookie
+  GET  /api/portal/status       pause state and the approved list
+  POST /api/portal/pause        {"minutes": n | "tomorrow" | "forever" | 0 (resume)}
+  GET  /api/portal/library?q=   search, POST/DELETE /api/portal/items/<key>
+  POST /api/portal/netflix      {"ref": "<netflix.com/title/... link or its number>"}
+  GET/POST /api/portal/volume   the kid volume ({"percent": 0-100}), via tablet-volume
+  GET  /api/portal/kids         the kids; lists, schedule and history routes take ?kid=
+  GET/POST /api/portal/schedule allowed hours, daily limit; POST extra, sleep (?kid=)
+  GET  /api/portal/history      what the kid played and opened; GET now, POST tv-stop
+  GET  /api/portal/system       TV, Plex, last update, disk space, uptime
+  GET  /api/portal/dance        the Dance songs; POST/DELETE /api/portal/dance/<id>
+  GET  /api/portal/dance-library?q=  Danny Go! songs; POST /api/portal/dance-link {"ref"}
+"""
+import collections.abc
+import copy
+import datetime
+import grp
+import pwd
+import shutil
+import hashlib
+import hmac
+import html
+import http.client
+import http.server
+import io
+import ipaddress
+import itertools
+import json
+import os
+import secrets
+import pathlib
+import random
+import re
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+import xml.etree.ElementTree as ET
+
+STATE = pathlib.Path(os.environ.get("TABLET_MOVIES_STATE", "/var/lib/tablet-movies"))
+CONFIG = STATE / "config.json"
+POSTERS = STATE / "posters"
+PARENT_USER = os.environ.get("PARENT_USER", "parent")
+LISTEN = ("0.0.0.0", int(os.environ.get("TABLET_MOVIES_PORT", "8766")))
+ALLOWED_CLIENTS = [ipaddress.ip_network("192.168.240.0/24"), ipaddress.ip_network("127.0.0.0/8")]
+# The web portal also answers phones and computers on the home network.
+HOME_NETWORKS = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+PORTAL_PAGE = pathlib.Path(os.environ.get("TABLET_MOVIES_PORTAL", "/usr/local/share/tablet-os/movies-portal.html"))
+PORTAL_COOKIE = "kidsos_portal"
+PORTAL_SESSION_DAYS = 90
+MORNING_HOUR = 7  # "until tomorrow" ends at 7 am
+PLEX_ROKU_APP = "13535"
+NETFLIX_ROKU_APP = "12"
+YOUTUBE_ROKU_APP = "837"
+# Dance app: Danny Go! songs played by YouTube on the TV. yt-dlp (stage 36, in
+# its own venv) only lists the channel's videos and reads titles and lengths;
+# nothing is downloaded.
+YTDLP = os.environ.get("TABLET_YTDLP", "/opt/kidsos-ytdlp/bin/yt-dlp")
+DANCE_CHANNEL = "https://www.youtube.com/@dannygo/videos"
+DANCE_STARTERS = ["QHPi3tVbq6U", "etbS9iiWLl4", "ufnagMewn4E"]  # Swipe & Scan, Skeleton Shake, Spiders
+DANCE_PARTY_MAX = 6
+VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+UA = "KidsOS-Movies/1.0"  # Python's default UA is blocked by some Cloudflare-fronted servers
+PRODUCT = "Kids OS Movies"
+
+lock = threading.Lock()  # config file reads/writes and settings changes
+play_lock = threading.Lock()  # one TV command at a time; held without `lock`, so posters keep loading
+command_ids = itertools.count(1)
+last_started = 0.0  # when a title was last picked
+PLAY_COOLDOWN = 90  # seconds after a pick when more are ignored, so the TV can catch up
+volume_lock = threading.Lock()
+generation = 0  # bumped by every pick, so an older dance party stops following the TV
+channel_cache = {"at": 0.0, "songs": []}
+THEMES = ("sky", "space", "sea", "dino", "trucks",  # backgrounds built into the apps
+          "princess", "unicorn", "fairy", "mermaid", "sweets")
+DEFAULT_THEME = "sky"
+KIDS_GROUP = "kidsos-kids"
+LIST_KEYS = ("movies", "dance")  # each kid has their own; everything else is shared
+USAGE = STATE / "usage.json"  # minutes on the tablet per kid per day (not in the config:
+HISTORY = STATE / "history.json"  # it changes every minute, and config changes redo the login screen)
+LAST_UPDATE = pathlib.Path("/var/lib/tablet-os/last-update")
+side_lock = threading.Lock()  # usage and history files
+last_play = {}  # what the bridge last put on the TV, for the parents' "On the TV now"
+
+
+# ---- config -------------------------------------------------------------------
+
+def load():
+    try:
+        return json.loads(CONFIG.read_text())
+    except (FileNotFoundError, ValueError):
+        return {"client_id": "kidsos-" + uuid.uuid4().hex[:16], "movies": []}
+
+
+def kid_users():
+    """The kids (kidsos-kids), oldest account first; just "kid" if there's no group."""
+    try:
+        members = grp.getgrnam(KIDS_GROUP).gr_mem
+    except KeyError:
+        members = []
+    accounts = []
+    for name in members:
+        try:
+            accounts.append(pwd.getpwnam(name))
+        except KeyError:
+            pass
+    return [a.pw_name for a in sorted(accounts, key=lambda a: a.pw_uid)] or ["kid"]
+
+
+def kid_name(user):
+    try:
+        return (pwd.getpwnam(user).pw_gecos.split(",")[0] or user).strip()
+    except KeyError:
+        return user
+
+
+def kid_settings(root, kid):
+    """One kid's own part of the config: their lists (a new kid starts with a
+    copy of the first kid's, or of the lists from before there were several
+    kids), schedule and bedtime overrides."""
+    kids = root.setdefault("kids", {})
+    if kid not in kids:
+        first = kids.get(kid_users()[0]) or {key: root.get(key, []) for key in LIST_KEYS}
+        kids[kid] = {key: copy.deepcopy(first.get(key, [])) for key in LIST_KEYS}
+    for key in LIST_KEYS:
+        kids[kid].setdefault(key, [])
+    return kids[kid]
+
+
+class KidView(collections.abc.MutableMapping):
+    """The config as one kid sees it: "movies" and "dance" are theirs, the rest shared."""
+
+    def __init__(self, root, kid):
+        self.root, self.kid = root, kid
+        self.own = kid_settings(root, kid)
+
+    def _home(self, key):
+        return self.own if key in LIST_KEYS else self.root
+
+    def __getitem__(self, key):
+        return self._home(key)[key]
+
+    def __setitem__(self, key, value):
+        self._home(key)[key] = value
+
+    def __delitem__(self, key):
+        del self._home(key)[key]
+
+    def __iter__(self):
+        return iter(self.root)
+
+    def __len__(self):
+        return len(self.root)
+
+
+def for_kid(cfg, kid):
+    kids = kid_users()
+    return KidView(cfg, kid if kid in kids else kids[0])
+
+
+def save(cfg):
+    if isinstance(cfg, KidView):
+        cfg = cfg.root
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = CONFIG.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, indent=1))
+    os.chmod(tmp, 0o600)
+    tmp.replace(CONFIG)
+
+
+# ---- movie time pause and the approved list -------------------------------------
+
+def paused_until(cfg):
+    """None if movie time is on; otherwise "forever" or the epoch time it resumes."""
+    until = cfg.get("paused_until")
+    if until == "forever" or (isinstance(until, (int, float)) and until > time.time()):
+        return until
+    return None
+
+
+def pause_text(until):
+    if until is None:
+        return "Movie time is on"
+    if until == "forever":
+        return "Paused until you resume it"
+    return "Paused until " + datetime.datetime.fromtimestamp(until).strftime("%-I:%M %p").lower() + (
+        "" if datetime.date.fromtimestamp(until) == datetime.date.today() else " tomorrow")
+
+
+def set_pause(cfg, how):
+    if how in (0, "0", None, "resume"):
+        cfg.pop("paused_until", None)
+    elif how == "forever":
+        cfg["paused_until"] = "forever"
+    elif how == "tomorrow":
+        # The next 7 am: later today if it's the small hours, otherwise tomorrow.
+        now = datetime.datetime.now()
+        morning = now.replace(hour=MORNING_HOUR, minute=0, second=0, microsecond=0)
+        if morning <= now:
+            morning += datetime.timedelta(days=1)
+        cfg["paused_until"] = morning.timestamp()
+    else:
+        minutes = int(how)
+        if not 1 <= minutes <= 24 * 60:
+            raise ValueError("pause must be 1 minute to 24 hours")
+        cfg["paused_until"] = time.time() + minutes * 60
+    save(cfg)
+
+
+def add_item(cfg, key):
+    if not any(m["key"] == key for m in cfg["movies"]):
+        item = plex_json(cfg, f"{cfg['server_url']}/library/metadata/{int(key)}",
+                         cfg["server_token"])["MediaContainer"]["Metadata"][0]
+        if item.get("type") not in PLEX_TYPES:
+            raise KeyError(key)  # only whole movies and shows go on the list
+        cfg["movies"].append({"key": key, "title": item["title"], "year": item.get("year"),
+                              "thumb": item.get("thumb"), "kind": item["type"]})
+        cfg["movies"].sort(key=lambda m: m["title"].lower())
+        save(cfg)
+
+
+def netflix_id(ref):
+    """The title number from a netflix.com/title/<id> link (or the bare number)."""
+    found = re.search(r"(?:title/|jbv=|^\s*)(\d{5,10})\b", str(ref))
+    if not found:
+        raise ValueError("paste the netflix.com/title/... link, or the number at its end")
+    return found[1]
+
+
+def netflix_page(nid):
+    """The title's public netflix.com page, read only as far as its show/movie
+    marker (the pages are a couple of MB and the end sometimes arrives cut off)."""
+    req = urllib.request.Request(f"https://www.netflix.com/title/{nid}",
+                                 headers={"User-Agent": UA, "Accept-Language": "en-US"})
+    page = b""
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            while len(page) < 8_000_000 and not re.search(rb'"@type":"(TVSeries|Movie)"', page[-300_000:]):
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                page += chunk
+    except urllib.error.HTTPError:
+        return ""
+    except http.client.IncompleteRead as e:
+        page += e.partial
+    return page.decode(errors="replace")
+
+
+def add_netflix(cfg, ref):
+    """Look the title up on its public netflix.com page and put it on the list."""
+    nid = netflix_id(ref)
+    key = f"nf{nid}"
+    if not any(m["key"] == key for m in cfg["movies"]):
+        page = netflix_page(nid)
+        meta = lambda prop: html.unescape((re.search(f'property="og:{prop}" content="([^"]*)"', page) or [None, ""])[1])
+        title = re.sub(r"^Watch\s+|\s*\|\s*Netflix.*$", "", meta("title")).strip()
+        if not title:
+            raise ValueError(f"Netflix has no title {nid}")
+        cfg["movies"].append({"key": key, "title": title, "kind": "netflix", "thumb": meta("image"),
+                              "netflix_type": "series" if '"@type":"TVSeries"' in page else "movie"})
+        cfg["movies"].sort(key=lambda m: m["title"].lower())
+        save(cfg)
+    return key
+
+
+def remove_item(cfg, key):
+    cfg["movies"] = [m for m in cfg["movies"] if m["key"] != key]
+    save(cfg)
+
+
+# ---- web portal PIN and sessions ----------------------------------------------------
+
+failed_logins = {}  # client ip -> (failures, locked until)
+
+
+def pin_digest(pin, salt):
+    return hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), 200_000).hex()
+
+
+def set_portal_pin(cfg, pin):
+    pin = str(pin)
+    if not re.fullmatch(r"\d{4,8}", pin):
+        raise ValueError("the PIN must be 4 to 8 digits")
+    salt = secrets.token_hex(16)
+    cfg["portal_pin"] = {"salt": salt, "hash": pin_digest(pin, salt)}
+    cfg["portal_sessions"] = {}  # a new PIN signs out every phone
+    save(cfg)
+
+
+def portal_login(cfg, ip, pin):
+    """A new session token, or an error string."""
+    failures, locked_until = failed_logins.get(ip, (0, 0))
+    if locked_until > time.time():
+        return None, "Too many wrong PINs. Try again in a few minutes."
+    stored = cfg.get("portal_pin")
+    if not stored:
+        return None, "No PIN set yet: set one in Movies setup on the tablet (parent mode)."
+    if not hmac.compare_digest(pin_digest(str(pin), stored["salt"]), stored["hash"]):
+        failures += 1
+        failed_logins[ip] = (failures, time.time() + 300 if failures >= 5 else 0)
+        return None, "Wrong PIN."
+    failed_logins.pop(ip, None)
+    token = secrets.token_urlsafe(32)
+    sessions = {k: v for k, v in cfg.get("portal_sessions", {}).items() if v > time.time()}
+    sessions[hashlib.sha256(token.encode()).hexdigest()] = time.time() + PORTAL_SESSION_DAYS * 86400
+    cfg["portal_sessions"] = sessions
+    save(cfg)
+    return token, None
+
+
+def portal_session_ok(cfg, token):
+    if not token:
+        return False
+    expires = cfg.get("portal_sessions", {}).get(hashlib.sha256(token.encode()).hexdigest(), 0)
+    return expires > time.time()
+
+
+# ---- HTTP helpers -----------------------------------------------------------------
+
+def fetch(url, method="GET", headers=None, timeout=15, raw=False):
+    req = urllib.request.Request(url, method=method, headers={"User-Agent": UA, **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = r.read()
+    return body if raw else body.decode(errors="replace")
+
+
+def plex_headers(cfg, token=None):
+    h = {"Accept": "application/json", "X-Plex-Product": PRODUCT, "X-Plex-Device-Name": "Kids OS",
+         "X-Plex-Client-Identifier": cfg["client_id"]}
+    if token:
+        h["X-Plex-Token"] = token
+    return h
+
+
+def plex_json(cfg, url, token, method="GET"):
+    return json.loads(fetch(url, method, plex_headers(cfg, token)))
+
+
+# ---- Plex account, profile and server ---------------------------------------------
+
+def link_start(cfg):
+    pin = plex_json(cfg, "https://plex.tv/api/v2/pins", None, "POST")
+    cfg["link"] = {"id": pin["id"], "code": pin["code"]}
+    save(cfg)
+    return {"code": pin["code"], "url": "https://plex.tv/link"}
+
+
+def link_poll(cfg):
+    link = cfg.get("link")
+    if not link:
+        return {"linked": "account_token" in cfg}
+    pin = plex_json(cfg, f"https://plex.tv/api/v2/pins/{link['id']}", None)
+    if pin.get("authToken"):
+        cfg["account_token"] = pin["authToken"]
+        user = plex_json(cfg, "https://plex.tv/api/v2/user", cfg["account_token"])
+        cfg["account"] = user.get("username") or user.get("title")
+        cfg.pop("link")
+        save(cfg)
+    return {"linked": "account_token" in cfg, "account": cfg.get("account")}
+
+
+def profiles(cfg):
+    root = ET.fromstring(fetch("https://plex.tv/api/home/users", headers={
+        **plex_headers(cfg, cfg["account_token"]), "Accept": "application/xml"}))
+    return [{"id": u.get("id"), "title": u.get("title"), "restricted": u.get("restricted") == "1"}
+            for u in root.iter("User")]
+
+
+def use_profile(cfg, user_id):
+    """Switch to a Plex Home profile and get its token for the account's own server."""
+    switched = ET.fromstring(fetch(f"https://plex.tv/api/home/users/{user_id}/switch", "POST", {
+        **plex_headers(cfg, cfg["account_token"]), "Accept": "application/xml"}))
+    profile_token = switched.get("authenticationToken") or switched.get("authToken")
+    # The switched token is rejected by the server itself; the per-server access
+    # token comes from the resources list fetched with it.
+    resources = plex_json(cfg, "https://plex.tv/api/v2/resources?includeHttps=1", profile_token)
+    owned = [r for r in plex_json(cfg, "https://plex.tv/api/v2/resources?includeHttps=1", cfg["account_token"])
+             if "server" in r.get("provides", "") and r.get("owned")]
+    if not owned:
+        raise RuntimeError("this Plex account doesn't own a server")
+    server = owned[0]
+    access = next((r for r in resources if r["clientIdentifier"] == server["clientIdentifier"]), None)
+    if not access:
+        raise RuntimeError("that profile can't access the server")
+    cfg.update(profile_id=user_id, profile=switched.get("title"), server_id=server["clientIdentifier"],
+               server_name=server["name"], server_token=access["accessToken"])
+    cfg["server_url"] = cfg.get("server_url_override") or pick_connection(cfg, server)
+    save(cfg)
+
+
+def pick_connection(cfg, server):
+    """First server address that answers from here (the TV is on the same network)."""
+    for conn in sorted(server.get("connections", []), key=lambda c: (c.get("relay", False), c.get("local", False))):
+        try:
+            fetch(conn["uri"] + "/identity", headers=plex_headers(cfg), timeout=5)
+            return conn["uri"]
+        except OSError:
+            continue
+    raise RuntimeError("can't reach the Plex server")
+
+
+PLEX_TYPES = {"movie": 1, "show": 2}  # Plex library section type -> item type number
+
+
+def library(cfg, query):
+    """Movies and TV shows the profile can see (shows play a random episode)."""
+    url, token = cfg["server_url"], cfg["server_token"]
+    found = []
+    for s in plex_json(cfg, f"{url}/library/sections", token)["MediaContainer"].get("Directory", []):
+        if s["type"] not in PLEX_TYPES:
+            continue
+        params = {"type": PLEX_TYPES[s["type"]]}
+        if query:
+            params["title"] = query
+        items = plex_json(cfg, f"{url}/library/sections/{s['key']}/all?{urllib.parse.urlencode(params)}", token)
+        for m in items["MediaContainer"].get("Metadata", []):
+            found.append({"key": m["ratingKey"], "title": m["title"], "year": m.get("year"),
+                          "rating": m.get("contentRating"), "thumb": m.get("thumb"), "kind": s["type"]})
+    found.sort(key=lambda m: m["title"].lower())
+    return found[:200]
+
+
+last_episode = {}  # show key -> episode played last time, to avoid an instant repeat
+
+
+def pick_episode(cfg, show_key):
+    """A random episode of the show (not the same one as last time, if there's a choice)."""
+    episodes = plex_json(cfg, f"{cfg['server_url']}/library/metadata/{int(show_key)}/allLeaves",
+                         cfg["server_token"])["MediaContainer"].get("Metadata", [])
+    if not episodes:
+        raise RuntimeError("that show has no episodes the profile can see")
+    keys = [e["ratingKey"] for e in episodes]
+    choices = [k for k in keys if k != last_episode.get(show_key)] or keys
+    episode = random.choice(choices)
+    last_episode[show_key] = episode
+    return episode
+
+
+def poster(cfg, key):
+    POSTERS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    netflix = key.startswith("nf")
+    path = POSTERS / (f"nf{int(key[2:])}.jpg" if netflix else f"{int(key)}.jpg")
+    if not path.exists():
+        movie = next((m for m in cfg["movies"] if m["key"] == key), None)
+        if not movie or not movie.get("thumb"):
+            raise KeyError(key)
+        if netflix:
+            data = netflix_poster(fetch(movie["thumb"], raw=True))
+        else:
+            q = urllib.parse.urlencode({"width": 400, "height": 600, "minSize": 1, "url": movie["thumb"]})
+            data = fetch(f"{cfg['server_url']}/photo/:/transcode?{q}",
+                         headers=plex_headers(cfg, cfg["server_token"]), raw=True)
+        tmp = path.with_suffix(f".{threading.get_ident()}.tmp")  # posters load in parallel
+        tmp.write_bytes(data)
+        tmp.replace(path)
+        return data
+    return path.read_bytes()
+
+
+def netflix_poster(art):
+    """A 400x600 poster from Netflix's wide title art: the art across the middle
+    over a blurred, darkened copy of itself, with a Netflix-red strip at the bottom."""
+    from PIL import Image, ImageDraw, ImageFilter
+    wide = Image.open(io.BytesIO(art)).convert("RGB")
+    scale = max(400 / wide.width, 600 / wide.height)
+    back = wide.resize((round(wide.width * scale), round(wide.height * scale)))
+    left, top = (back.width - 400) // 2, (back.height - 600) // 2
+    back = back.crop((left, top, left + 400, top + 600)).filter(ImageFilter.GaussianBlur(18))
+    back = Image.blend(back, Image.new("RGB", (400, 600), "black"), 0.35)
+    front = wide.resize((400, round(wide.height * 400 / wide.width)))
+    back.paste(front, (0, (600 - front.height) // 2))
+    ImageDraw.Draw(back).rectangle((0, 588, 400, 600), fill=(229, 9, 20))
+    out = io.BytesIO()
+    back.save(out, "JPEG", quality=88)
+    return out.getvalue()
+
+
+# ---- Roku TVs -----------------------------------------------------------------------
+
+def local_ipv4s():
+    out = subprocess.run(["ip", "-4", "-o", "addr", "show", "scope", "global"], capture_output=True, text=True)
+    for line in out.stdout.splitlines():
+        dev, addr = line.split()[1], line.split()[3].split("/")[0]
+        if not dev.startswith(("waydroid", "lxcbr", "docker", "virbr")):
+            yield addr
+
+
+def roku_info(ip):
+    info = fetch(f"http://{ip}:8060/query/device-info", timeout=3)
+    tag = lambda k: (re.search(f"<{k}>(.*?)</{k}>", info) or [None, ""])[1]
+    tv = {"ip": ip, "serial": tag("serial-number") or tag("device-id"), "name": tag("user-device-name"),
+          "location": tag("user-device-location"), "power": tag("power-mode")}
+    try:
+        apps = fetch(f"http://{ip}:8060/query/apps", timeout=3)
+        tv["plex"] = f'id="{PLEX_ROKU_APP}"' in apps
+        tv["netflix"] = f'id="{NETFLIX_ROKU_APP}"' in apps
+    except OSError:
+        tv["plex"] = tv["netflix"] = None  # app list blocked ("Limited" mobile-app control)
+    return tv
+
+
+def discover_tvs(wait=3.0):
+    msg = (b"M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nMan: \"ssdp:discover\"\r\n"
+           b"ST: roku:ecp\r\nMX: 2\r\n\r\n")
+    ips = set()
+    socks = []
+    for addr in local_ipv4s():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(addr))
+        s.bind((addr, 0))
+        s.settimeout(0.3)
+        s.sendto(msg, ("239.255.255.250", 1900))
+        socks.append(s)
+    end = time.time() + wait
+    while time.time() < end:
+        for s in socks:
+            try:
+                data, peer = s.recvfrom(2048)
+                if b"roku" in data.lower():
+                    ips.add(peer[0])
+            except socket.timeout:
+                pass
+    tvs = []
+    for ip in sorted(ips):
+        try:
+            tvs.append(roku_info(ip))
+        except OSError:
+            pass
+    return tvs
+
+
+def find_tv(cfg):
+    """The chosen TV's current info, rediscovering it if its address changed."""
+    tv = cfg.get("tv")
+    if not tv:
+        return None
+    try:
+        info = roku_info(tv["ip"])
+        if info["serial"] == tv["serial"]:
+            return info
+    except OSError:
+        pass
+    for info in discover_tvs():
+        if info["serial"] == tv["serial"]:
+            with lock:
+                fresh = load()
+                if fresh.get("tv", {}).get("serial") == info["serial"]:
+                    fresh["tv"]["ip"] = info["ip"]
+                    save(fresh)
+            return info
+    return None
+
+
+def companion_id(ip, timeout=2):
+    root = ET.fromstring(fetch(f"http://{ip}:8324/resources", timeout=timeout))
+    return root.find("Player").get("machineIdentifier")
+
+
+def cooldown_left():
+    return max(0, round(PLAY_COOLDOWN - (time.time() - last_started)))
+
+
+def play(cfg, key, dance=None):
+    """A movie/show (key) or Dance songs (a list of video ids) from the kid's
+    own lists, under one lockout (and only in their tablet time)."""
+    global last_started, generation
+    if cooldown_left():
+        return {"result": "busy", "message": "The TV is catching up.", "cooldown": cooldown_left()}
+    kid = cfg.kid if isinstance(cfg, KidView) else None
+    if kid and not kid_allowed(cfg.root, kid)[0]:
+        return {"result": "sleeping", "message": "The tablet is sleeping."}
+    generation += 1
+    result = start_dance(cfg, dance) if dance else start(cfg, key)
+    if result["result"] == "playing":
+        last_started = time.time()
+        result["cooldown"] = PLAY_COOLDOWN
+        if dance:
+            songs = {song["id"]: song["title"] for song in cfg.get("dance", [])}
+            title, kind = ", ".join(songs.get(v, v) for v in dance), "dance"
+        else:
+            item = next((m for m in cfg.get("movies", []) if m["key"] == key), {})
+            title, kind = item.get("title", key), item.get("kind") or "movie"
+        last_play.update(title=title, kind=kind, kid=kid, at=int(time.time()))
+        if kid:
+            add_history(kid, kind, title)
+    return result
+
+
+# ---- Dance: Danny Go! songs on the TV's YouTube app ----------------------------------
+
+def ytdlp(url):
+    """A channel's video list (ids, titles, lengths) in one request: no downloads,
+    no per-video lookups."""
+    env = {**os.environ, "HOME": str(STATE), "XDG_CACHE_HOME": str(STATE / "cache")}
+    out = subprocess.run([YTDLP, "-J", "--no-warnings", "--skip-download", "--flat-playlist", url],
+                         capture_output=True, text=True, timeout=180, env=env)
+    if out.returncode:
+        raise RuntimeError("YouTube didn't answer: " + (out.stderr.strip().splitlines() or ["?"])[-1])
+    return json.loads(out.stdout)
+
+
+def song_title(title):
+    """'"Airplane Mode!" Flying Dance ✈️ | Danny Go! Songs for Kids' -> 'Airplane Mode!'"""
+    head = title.split(" | ")[0].strip()
+    quoted = re.match(r'^["“](.+?)["”]', head)
+    return (quoted[1] if quoted else head)[:48]
+
+
+def dance_channel():
+    """The Danny Go! channel's videos (cached for 6 hours)."""
+    if time.time() - channel_cache["at"] > 6 * 3600 or not channel_cache["songs"]:
+        entries = ytdlp(DANCE_CHANNEL).get("entries") or []
+        channel_cache["songs"] = [{"id": e["id"], "title": song_title(e.get("title") or ""),
+                                   "full_title": e.get("title"), "duration": int(e["duration"])}
+                                  for e in entries if e.get("id") and e.get("duration")]
+        channel_cache["at"] = time.time()
+    return channel_cache["songs"]
+
+
+def youtube_id(ref):
+    ref = str(ref).strip()
+    found = re.search(r"(?:v=|youtu\.be/|shorts/|embed/|live/)([A-Za-z0-9_-]{11})", ref)
+    if found:
+        return found[1]
+    if VIDEO_ID.fullmatch(ref):
+        return ref
+    raise ValueError("paste a YouTube link (youtube.com/watch?v=... or youtu.be/...)")
+
+
+def add_song(cfg, ref):
+    vid = youtube_id(ref)
+    songs = cfg.setdefault("dance", [])
+    if not any(song["id"] == vid for song in songs):
+        song = next((song for song in dance_channel() if song["id"] == vid), None) or video_info(vid)
+        songs.append({k: song[k] for k in ("id", "title", "duration")})
+        save(cfg)
+    return vid
+
+
+def video_info(vid):
+    """Any YouTube video: its title from YouTube's oEmbed (link preview) service,
+    its length from its public page when that has it (else None: dance_watch
+    then notices the end by YouTube moving on to another video)."""
+    title = None
+    try:
+        q = urllib.parse.urlencode({"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"})
+        title = json.loads(fetch(f"https://www.youtube.com/oembed?{q}")).get("title")
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 404):
+            raise ValueError("YouTube doesn't have that video")
+    duration = None
+    try:
+        page = fetch(f"https://www.youtube.com/watch?v={vid}", headers={"Accept-Language": "en-US"})
+        length = re.search(r'"lengthSeconds":"(\d+)"', page)
+        duration = int(length[1]) if length else None
+        if not title:
+            found = re.search(r"<title>(.*?)(?: - YouTube)?</title>", page)
+            title = html.unescape(found[1]) if found else None
+    except OSError:
+        pass
+    return {"id": vid, "title": song_title(title or "YouTube video"), "duration": duration}
+
+
+def remove_song(cfg, vid):
+    cfg["dance"] = [song for song in cfg.get("dance", []) if song["id"] != vid]
+    save(cfg)
+
+
+def seed_dance():
+    """First run: start the Dance list with a few favourites (needs the internet)."""
+    with lock:
+        if "dance" in load():  # the starting list new kids copy
+            return
+    try:
+        dance_channel()
+    except Exception as e:  # try again next start
+        print(f"Dance: can't list the channel yet: {e!r}", flush=True)
+        return
+    with lock:
+        cfg = load()
+        if "dance" not in cfg:
+            cfg["dance"] = []
+            for vid in DANCE_STARTERS:
+                song = next((s for s in channel_cache["songs"] if s["id"] == vid), None)
+                if song:
+                    cfg["dance"].append({k: song[k] for k in ("id", "title", "duration")})
+            save(cfg)
+
+
+def dance_thumb(vid):
+    if not VIDEO_ID.fullmatch(vid or ""):
+        raise KeyError(vid)
+    thumbs = STATE / "thumbs"
+    thumbs.mkdir(mode=0o700, exist_ok=True)
+    path = thumbs / f"{vid}.jpg"
+    if not path.exists():
+        data = fetch(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", raw=True)
+        tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+        return data
+    return path.read_bytes()
+
+
+def roku_app(ip):
+    try:
+        found = re.search(r'<app id="(\w+)"', fetch(f"http://{ip}:8060/query/active-app", timeout=4))
+    except OSError:
+        return None
+    return found[1] if found else None
+
+
+def roku_key(ip, key):
+    fetch(f"http://{ip}:8060/keypress/{key}", "POST", timeout=5)
+
+
+def youtube_start(ip):
+    """YouTube opens on its "Who's watching?" screen (it appears ~15-25 s after
+    launch); OK there picks the last-used profile and the song starts. Never OK
+    while something plays: on the Roku, OK is pause."""
+    deadline = time.time() + 50
+    next_ok = time.time() + 14
+    while time.time() < deadline:
+        state = roku_player(ip)[0]
+        if state in ("play", "buffer", "open", "pause"):
+            return wait_for(lambda: roku_player(ip)[0] == "play", 25)
+        if time.time() >= next_ok:
+            roku_key(ip, "Select")
+            next_ok = time.time() + 8
+        time.sleep(1)
+    return False
+
+
+def start_dance(cfg, ids):
+    songs = {song["id"]: song for song in cfg.get("dance", [])}
+    queue = [songs[vid] for vid in ids if vid in songs][:DANCE_PARTY_MAX]
+    if not queue:
+        return {"result": "error", "message": "That song isn't on the list."}
+    if paused_until(cfg) is not None:
+        return {"result": "paused", "message": "Movie time is taking a break."}
+    tv = find_tv(cfg)
+    if not tv or tv["power"] != "PowerOn":
+        return {"result": "tv_off", "message": "The TV is off."}
+    ip = tv["ip"]
+    try:
+        roku_key(ip, "Home")
+        time.sleep(2.5)
+        fetch(f"http://{ip}:8060/launch/{YOUTUBE_ROKU_APP}?contentID={queue[0]['id']}&mediaType=movie",
+              "POST", timeout=10)
+    except urllib.error.HTTPError:
+        return {"result": "error", "message": "YouTube isn't on the TV."}
+    if not youtube_start(ip):
+        return {"result": "error", "message": "The TV didn't start it."}
+    threading.Thread(target=dance_watch, args=(ip, queue, generation), daemon=True).start()
+    return {"result": "playing", "message": "Let's dance!"}
+
+
+def dance_watch(ip, queue, mine):
+    """Follows a dance party on the TV: ads before a song run on their own
+    counter; when the song's counter reaches its length, start the next song.
+    After the last one YouTube's own autoplay carries on (the owner's choice)."""
+    for index, song in enumerate(queue[:-1]):
+        length_ms = (song.get("duration") or 0) * 1000
+        give_up = time.time() + (song.get("duration") or 900) + 300  # the song plus room for ads
+        # Any of these means the song is over. (YouTube's position stops a few
+        # seconds short of the listed length, so don't wait for the exact end.)
+        #  - it's within ~4.5 s of its length
+        #  - it stopped or paused past 90% of its length
+        #  - YouTube started another video after this one ran a minute or more
+        #    (autoplay; also how a song without a known length ends)
+        previous = 0
+        while time.time() < give_up:
+            time.sleep(1)
+            if generation != mine:
+                return  # something else was picked
+            if roku_app(ip) != YOUTUBE_ROKU_APP:
+                return  # someone left YouTube with the remote
+            state, ms = roku_player(ip)
+            if length_ms and state == "play" and ms >= length_ms - 4500:
+                break
+            if length_ms and state in ("pause", "stop", "close") and previous >= length_ms * 0.9:
+                break
+            if state == "play" and ms + 5000 < previous and previous >= max(60000, length_ms * 0.8):
+                break
+            if state == "play":
+                previous = ms
+        else:
+            return
+        nxt = queue[index + 1]
+        # YouTube is already past its profile screen: hand it the next song.
+        fetch(f"http://{ip}:8060/input/{YOUTUBE_ROKU_APP}?contentID={nxt['id']}&mediaType=movie", "POST",
+              timeout=10)
+        if not wait_for(lambda: roku_player(ip)[0] == "play" and roku_player(ip)[1] < 15000, 30):
+            roku_key(ip, "Home")
+            time.sleep(2.5)
+            fetch(f"http://{ip}:8060/launch/{YOUTUBE_ROKU_APP}?contentID={nxt['id']}&mediaType=movie",
+                  "POST", timeout=10)
+            if not youtube_start(ip):
+                return
+
+
+def tv_now():
+    """What the TV is showing, as far as the Roku says, plus what we last put on it."""
+    with lock:
+        cfg = load()
+    tv = find_tv(cfg) if cfg.get("tv") else None
+    out = {"tv": None, "last": dict(last_play) or None}
+    if tv:
+        app = None
+        try:
+            found = re.search(r"<app[^>]*>([^<]*)</app>", fetch(f"http://{tv['ip']}:8060/query/active-app",
+                                                                 timeout=4))
+            app = html.unescape(found[1]) if found else None
+        except OSError:
+            pass
+        state, ms = roku_player(tv["ip"]) if tv["power"] == "PowerOn" else (None, 0)
+        out["tv"] = {"name": tv.get("location") or tv.get("name"), "power": tv["power"], "app": app,
+                     "state": state, "position": ms // 1000}
+    if out["last"] and out["last"].get("kid"):
+        out["last"]["kid_name"] = kid_name(out["last"]["kid"])
+    return out
+
+
+def tv_stop():
+    """The parents' Stop: whatever's on goes away (the TV's home screen)."""
+    global generation
+    generation += 1  # a dance party stops following
+    with lock:
+        cfg = load()
+    tv = find_tv(cfg)
+    if not tv or tv["power"] != "PowerOn":
+        return {"ok": False, "message": "The TV is off."}
+    roku_key(tv["ip"], "Home")
+    return {"ok": True}
+
+
+def system_status():
+    """The portal's at-a-glance health check."""
+    with lock:
+        cfg = load()
+    out = {"kid_on_screen": kid_name(active_kid()) if active_kid() else None}
+    tv = find_tv(cfg) if cfg.get("tv") else None
+    out["tv"] = ({"name": tv.get("location") or tv.get("name"), "power": tv["power"]} if tv
+                 else {"name": (cfg.get("tv") or {}).get("name"), "power": None})
+    plex = {"linked": "account_token" in cfg, "server": cfg.get("server_name"), "reachable": None}
+    if cfg.get("server_url"):
+        try:
+            fetch(f"{cfg['server_url']}/identity", headers=plex_headers(cfg), timeout=4)
+            plex["reachable"] = True
+        except OSError:
+            plex["reachable"] = False
+    out["plex"] = plex
+    try:
+        stamp, commit, result = LAST_UPDATE.read_text().split(maxsplit=2)
+        out["update"] = {"at": int(stamp), "commit": commit, "result": result.strip()}
+    except (OSError, ValueError):
+        out["update"] = None
+    disk = shutil.disk_usage("/")
+    out["disk"] = {"free_gb": round(disk.free / 1e9, 1), "total_gb": round(disk.total / 1e9, 1)}
+    with open("/proc/uptime") as f:
+        out["uptime_hours"] = round(float(f.read().split()[0]) / 3600, 1)
+    return out
+
+
+def kid_volume(percent=None):
+    """The kid volume (percent), set first if given: via tablet-volume.path,
+    since this service can't reach into Android itself. None if Android
+    didn't answer (e.g. not running)."""
+    request_id = secrets.token_hex(4)
+    with volume_lock:
+        (STATE / "volume-request").write_text(f"{request_id} {'get' if percent is None else int(percent)}\n")
+        end = time.time() + 25
+        while time.time() < end:
+            time.sleep(0.3)
+            try:
+                answer_id, value = (STATE / "volume-status").read_text().split()
+            except (FileNotFoundError, ValueError):
+                continue
+            if answer_id == request_id:
+                return int(value) if value.isdigit() else None
+    return None
+
+
+def start(cfg, key):
+    item = next((m for m in cfg.get("movies", []) if m["key"] == key), None)
+    if not item:
+        return {"result": "error", "message": "That isn't on the list."}
+    if paused_until(cfg) is not None:
+        return {"result": "paused", "message": "Movie time is taking a break."}
+    tv = find_tv(cfg)
+    if not tv or tv["power"] != "PowerOn":
+        return {"result": "tv_off", "message": "The TV is off."}
+
+    if item.get("kind") == "netflix":
+        # Opens Netflix straight to the title, from anywhere (even another app).
+        q = urllib.parse.urlencode({"contentId": key[2:], "mediaType": item.get("netflix_type", "series")})
+        try:
+            fetch(f"http://{tv['ip']}:8060/launch/{NETFLIX_ROKU_APP}?{q}", "POST", timeout=10)
+        except urllib.error.HTTPError:
+            return {"result": "error", "message": "Netflix isn't on the TV."}
+        threading.Thread(target=netflix_from_start, args=(tv["ip"],), daemon=True).start()
+        return {"result": "playing", "message": "It's starting on the TV!"}
+
+    # Plex on the Roku only plays a command cleanly from a fresh start with a
+    # profile picked on its "Who's watching?" screen. Already open, or
+    # signed in some other way, it ignores the command or shows that screen
+    # over the video. So every play starts Plex over the same way (this also
+    # takes the TV out of Netflix or whatever else is on).
+    ip = tv["ip"]
+    try:
+        fetch(f"http://{ip}:8060/keypress/Home", "POST", timeout=5)
+        time.sleep(2.5)
+        fetch(f"http://{ip}:8060/launch/{PLEX_ROKU_APP}", "POST", timeout=5)
+    except urllib.error.HTTPError:
+        # Roku "Control by mobile apps" is set to Limited (or Plex is missing).
+        return {"result": "plex_closed", "message": "Plex isn't open on the TV."}
+    target = None
+    for _ in range(25):
+        time.sleep(1)
+        try:
+            target = companion_id(ip)
+            break
+        except OSError:
+            pass
+    if not target:
+        return {"result": "plex_closed", "message": "Plex isn't open on the TV."}
+    time.sleep(4)  # until "Who's watching?" is up
+    # OK picks the highlighted profile: the last one used on the TV (Kids).
+    fetch(f"http://{ip}:8060/keypress/Select", "POST", timeout=5)
+    time.sleep(6)  # signing in
+
+    # A TV show plays one of its episodes, picked at random.
+    if item.get("kind") == "show":
+        key = pick_episode(cfg, key)
+    reset_progress(cfg, key)
+    uri = f"server://{cfg['server_id']}/com.plexapp.plugins.library/library/metadata/{key}"
+    q = urllib.parse.urlencode({"type": "video", "uri": uri, "shuffle": 0, "repeat": 0, "continuous": 0})
+    queue_id = plex_json(cfg, f"{cfg['server_url']}/playQueues?{q}", cfg["server_token"],
+                         "POST")["MediaContainer"]["playQueueID"]
+    server = urllib.parse.urlparse(cfg["server_url"])
+    params = {"key": f"/library/metadata/{key}", "offset": 0, "type": "video",
+              "containerKey": f"/playQueues/{queue_id}?own=1&window=200",
+              "machineIdentifier": cfg["server_id"], "address": server.hostname,
+              "port": server.port or (443 if server.scheme == "https" else 80),
+              "protocol": server.scheme, "token": cfg["server_token"]}
+    headers = {**plex_headers(cfg), "X-Plex-Target-Client-Identifier": target}
+    # Check the TV really is playing, and ask once more if not.
+    for attempt in range(2):
+        params["commandID"] = next(command_ids)
+        fetch(f"http://{ip}:8324/player/playback/playMedia?{urllib.parse.urlencode(params)}",
+              headers=headers, timeout=20)
+        if wait_for(lambda: roku_player(ip)[0] in ("play", "buffer"), 15):
+            break
+        print("not playing 15s after asking; asking again", flush=True)
+    else:
+        return {"result": "error", "message": "The TV didn't start it."}
+    threading.Thread(target=rewind_when_playing, args=(cfg, ip, target), daemon=True).start()
+    return {"result": "playing", "message": "It's playing on the TV!"}
+
+
+def roku_player(ip):
+    """The Roku's own view of its video player: (state, position in ms), state
+    being "play", "pause", "buffer", "close", ...; (None, 0) if it won't say."""
+    try:
+        info = fetch(f"http://{ip}:8060/query/media-player", timeout=4)
+    except OSError:
+        return None, 0
+    state = re.search(r'<player [^>]*state="(\w+)"', info)
+    position = re.search(r"<position>(\d+)", info)
+    return (state[1] if state else None), (int(position[1]) if position else 0)
+
+
+def netflix_from_start(ip):
+    """Netflix always resumes where the profile left off. Once it's playing, if
+    that's partway in, rewind at full speed (3 presses) until it bottoms out at
+    the start, then play. (Rewinding ran 3:05 back to 0:00 within 25 s.)"""
+    if not wait_for(lambda: roku_player(ip)[0] == "play", 40):
+        return
+    time.sleep(2)
+    state, ms = roku_player(ip)
+    if state != "play" or ms <= 15000:
+        return
+    for _ in range(3):
+        fetch(f"http://{ip}:8060/keypress/Rev", "POST", timeout=5)
+        time.sleep(0.4)
+    time.sleep(min(90, 6 + ms / 1000 / 5))  # overshooting just waits at 0:00
+    fetch(f"http://{ip}:8060/keypress/Play", "POST", timeout=5)
+    print(f"Netflix started {ms // 1000}s in; rewound to the start", flush=True)
+
+
+def wait_for(check, seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        if check():
+            return True
+        time.sleep(1)
+    return False
+
+
+def rewind_when_playing(cfg, ip, target, wait=40):
+    """Always from the beginning: Plex may still resume from a saved spot, so
+    once it's playing, jump back to the start if it began partway in."""
+    end = time.time() + wait
+    while time.time() < end:
+        time.sleep(1.5)
+        state, ms = roku_player(ip)
+        if state == "play" and ms:
+            if ms > 15000:
+                q = urllib.parse.urlencode({"type": "video", "offset": 0, "commandID": next(command_ids)})
+                fetch(f"http://{ip}:8324/player/playback/seekTo?{q}", headers={
+                    **plex_headers(cfg), "X-Plex-Target-Client-Identifier": target}, timeout=5)
+                print(f"started {ms // 1000}s in; rewound to the start", flush=True)
+            return
+
+
+def reset_progress(cfg, key):
+    """Clear the saved spot for the Kids profile and the account owner (the
+    profiles the TV is usually signed in as), so there's nothing to resume."""
+    q = urllib.parse.urlencode({"key": key, "identifier": "com.plexapp.plugins.library",
+                                "time": 0, "state": "stopped"})
+    for token in (cfg["server_token"], cfg.get("account_token")):
+        try:
+            fetch(f"{cfg['server_url']}/:/progress?{q}", headers=plex_headers(cfg, token))
+        except OSError as e:
+            print(f"couldn't reset progress: {e!r}", flush=True)
+    return "ok"
+
+
+# ---- bedtime and daily limits ----------------------------------------------------------
+
+def read_side(path):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, ValueError):
+        return {} if path == USAGE else []
+
+
+def write_side(path, data):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def minutes_used(kid, day=None):
+    day = day or datetime.date.today().isoformat()
+    with side_lock:
+        return read_side(USAGE).get(kid, {}).get(day, 0)
+
+
+def count_usage():
+    """Once a minute: a minute of tablet time for the kid on the screen."""
+    while True:
+        time.sleep(60)
+        try:
+            kid = active_kid()
+            if not kid:
+                continue
+            today = datetime.date.today()
+            with side_lock:
+                usage = read_side(USAGE)
+                days = usage.setdefault(kid, {})
+                days[today.isoformat()] = days.get(today.isoformat(), 0) + 1
+                for d in list(days):  # two weeks is plenty
+                    if d < (today - datetime.timedelta(days=14)).isoformat():
+                        del days[d]
+                write_side(USAGE, usage)
+        except Exception as e:  # keep counting
+            print(f"usage: {e!r}", flush=True)
+
+
+DEFAULT_SCHEDULE = {"enabled": False, "from": "07:00", "to": "19:30", "daily": 0}
+
+
+def schedule_of(root, kid):
+    return {**DEFAULT_SCHEDULE, **kid_settings(root, kid).get("schedule", {})}
+
+
+def clock(text):
+    hour, minute = (int(x) for x in text.split(":"))
+    return datetime.time(hour, minute)
+
+
+def nice_time(when):
+    return when.strftime("%-I:%M %p").lower().replace(":00", "")
+
+
+def next_start(root, kid):
+    """When the kid's tablet time next begins (epoch)."""
+    start = clock(schedule_of(root, kid)["from"])
+    now = datetime.datetime.now()
+    at = datetime.datetime.combine(now.date(), start)
+    if at <= now:
+        at += datetime.timedelta(days=1)
+    return at.timestamp()
+
+
+def kid_allowed(root, kid):
+    """(allowed, message for the kid, minutes left or None if no limit)."""
+    own = kid_settings(root, kid)
+    now = time.time()
+    if own.get("sleep_until", 0) > now:
+        return False, f"See you at {nice_time(datetime.datetime.fromtimestamp(own['sleep_until']))}!", 0
+    if own.get("extra_until", 0) > now:
+        return True, "", int((own["extra_until"] - now) // 60)
+    sched = schedule_of(root, kid)
+    if not sched["enabled"]:
+        return True, "", None
+    today = datetime.datetime.now()
+    start, end = clock(sched["from"]), clock(sched["to"])
+    if not start <= today.time() < end:
+        return False, f"See you at {nice_time(datetime.datetime.fromtimestamp(next_start(root, kid)))}!", 0
+    left = (datetime.datetime.combine(today.date(), end) - today).seconds // 60
+    if sched["daily"]:
+        used = minutes_used(kid)
+        if used >= sched["daily"]:
+            return False, "That's all the tablet for today. See you tomorrow!", 0
+        left = min(left, sched["daily"] - used)
+    return True, "", left
+
+
+def set_schedule(root, kid, body):
+    sched = schedule_of(root, kid)
+    if "enabled" in body:
+        sched["enabled"] = bool(body["enabled"])
+    for key in ("from", "to"):
+        if key in body:
+            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(body[key])):
+                raise ValueError("times look like 07:30")
+            sched[key] = body[key]
+    if "daily" in body:
+        daily = int(body["daily"])
+        if not 0 <= daily <= 24 * 60:
+            raise ValueError("the daily limit is 0 (none) to 1440 minutes")
+        sched["daily"] = daily
+    if clock(sched["from"]) >= clock(sched["to"]):
+        raise ValueError("the start time must be before the end time")
+    kid_settings(root, kid)["schedule"] = sched
+    save(root)
+
+
+def add_history(kid, kind, title):
+    with side_lock:
+        history = read_side(HISTORY)
+        history.append({"t": int(time.time()), "kid": kid, "kind": kind, "title": title})
+        write_side(HISTORY, history[-1000:])
+
+
+# ---- themes -------------------------------------------------------------------------
+
+def active_kid():
+    """The user of the active graphical session on the screen, if it isn't the parent."""
+    out = subprocess.run(["loginctl", "list-sessions", "--no-legend"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] != PARENT_USER:
+            # (loginctl prints properties in its own order, so read them by name)
+            props = dict(line.split("=", 1) for line in subprocess.run(
+                ["loginctl", "show-session", fields[0], "-p", "Type", "-p", "Active", "-p", "Seat"],
+                capture_output=True, text=True).stdout.splitlines() if "=" in line)
+            if props.get("Type") in ("wayland", "x11") and props.get("Active") == "yes"                     and props.get("Seat") == "seat0":
+                return fields[2]
+    return None
+
+
+def theme_of(cfg, user):
+    return cfg.get("themes", {}).get(user or "", DEFAULT_THEME)
+
+
+def set_theme(cfg, user, theme):
+    if theme not in THEMES:
+        raise ValueError(f"themes: {', '.join(THEMES)}")
+    if not user or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user):
+        raise ValueError("no such user")
+    cfg.setdefault("themes", {})[user] = theme
+    save(cfg)
+
+
+# ---- who may change settings ----------------------------------------------------------
+
+def parent_on_desktop():
+    out = subprocess.run(["loginctl", "list-sessions", "--no-legend"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] == PARENT_USER:
+            props = dict(kv.split("=", 1) for kv in subprocess.run(
+                ["loginctl", "show-session", fields[0], "-p", "Type", "-p", "Active"],
+                capture_output=True, text=True).stdout.splitlines() if "=" in kv)
+            if props.get("Type") in ("wayland", "x11") and props.get("Active") == "yes":
+                return True
+    return False
+
+
+# ---- HTTP server -------------------------------------------------------------------------
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        print(f"{self.client_address[0]} {fmt % args}", flush=True)
+
+    def reply(self, code, body, ctype="application/json", headers=None):
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def body_json(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if not 0 < length <= 4096:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length))
+        except ValueError:
+            return {}
+
+    def handle_any(self, method):
+        client = ipaddress.ip_address(self.client_address[0])
+        path = urllib.parse.urlparse(self.path)
+        if path.path in ("/", "/portal") or path.path.startswith("/api/portal/"):
+            if not any(client in net for net in HOME_NETWORKS + ALLOWED_CLIENTS):
+                return self.reply(403, {"error": "forbidden"})
+            try:
+                return self.handle_portal(method, path, client)
+            except KeyError:
+                return self.reply(404, {"error": "not_found"})
+            except ValueError as e:
+                return self.reply(400, {"error": str(e)})
+            except Exception as e:  # report, don't crash the server
+                print(f"error on {method} {self.path}: {e!r}", flush=True)
+                return self.reply(500, {"error": str(e)})
+        if not any(client in net for net in ALLOWED_CLIENTS):
+            return self.reply(403, {"error": "forbidden"})
+        parts = [p for p in path.path.split("/") if p][1:]  # drop "api"
+        query = urllib.parse.parse_qs(path.query)
+        route = (method, parts[0] if parts else "")
+        try:
+            kid_routes = {("GET", "movies"), ("GET", "poster"), ("POST", "play"), ("GET", "theme"),
+                          ("POST", "theme"), ("GET", "dance"), ("GET", "dance-thumb"), ("POST", "dance-play"),
+                          ("GET", "allowed"), ("POST", "activity")}
+            if route not in kid_routes and not (client.is_loopback or parent_on_desktop()):
+                return self.reply(403, {"error": "parent_only"})
+            # Whose lists: the kid on the screen; for the parent (Movies & TV setup
+            # in parent mode), ?kid= or the kid whose tablet they opened.
+            if route in kid_routes:
+                kid = active_kid()
+            else:
+                with lock:
+                    kid = (query.get("kid") or [None])[0] or load().get("parent_kid")
+            view = lambda cfg: for_kid(cfg, kid)
+            if route in (("POST", "play"), ("POST", "dance-play")):
+                # Slow (TV and server round trips): don't hold the config lock.
+                if not play_lock.acquire(blocking=False):
+                    return self.reply(200, {"result": "busy", "message": "Already starting a movie."})
+                try:
+                    with lock:
+                        cfg = view(load())
+                    arg = parts[1] if len(parts) > 1 else ""
+                    if route[1] == "dance-play":
+                        return self.reply(200, play(cfg, None, dance=[v for v in arg.split(",") if v]))
+                    return self.reply(200, play(cfg, arg or None))
+                finally:
+                    play_lock.release()
+            if route == ("GET", "dance-thumb"):
+                return self.reply(200, dance_thumb(parts[1] if len(parts) > 1 else ""), "image/jpeg")
+            if route == ("GET", "poster"):
+                with lock:
+                    cfg = view(load())
+                return self.reply(200, poster(cfg, parts[1] if len(parts) > 1 else ""), "image/jpeg")
+            if route == ("GET", "allowed"):
+                with lock:
+                    cfg = view(load())
+                allowed, message, left = kid_allowed(cfg.root, cfg.kid)
+                return self.reply(200, {"allowed": allowed, "message": message, "minutes_left": left,
+                                        "kid": cfg.kid})
+            if route == ("POST", "activity"):
+                title = (query.get("title") or [""])[0][:80]
+                if title and active_kid():
+                    add_history(active_kid(), "app", title)
+                return self.reply(200, {"ok": True})
+            if route == ("POST", "parent-kid"):
+                with lock:
+                    cfg = load()
+                    if (parts[1] if len(parts) > 1 else "") not in kid_users():
+                        raise ValueError("no such kid")
+                    cfg["parent_kid"] = parts[1]
+                    save(cfg)
+                return self.reply(200, {"parent_kid": parts[1]})
+            with lock:
+                return self.reply(*self.dispatch(view(load()), route, parts, query))
+        except KeyError:
+            return self.reply(404, {"error": "not_found"})
+        except ValueError as e:
+            return self.reply(400, {"error": str(e)})
+        except Exception as e:  # report, don't crash the server
+            print(f"error on {method} {self.path}: {e!r}", flush=True)
+            return self.reply(500, {"error": str(e)})
+
+    def dispatch(self, cfg, route, parts, query):
+        arg = parts[1] if len(parts) > 1 else None
+        if route == ("GET", "movies"):
+            tv = cfg.get("tv") or {}
+            until = paused_until(cfg)
+            return 200, {"movies": [{k: m.get(k) for k in ("key", "title", "year", "kind")} for m in cfg["movies"]],
+                         "tv": tv.get("location") or tv.get("name"),
+                         "paused": until is not None, "pause_text": pause_text(until),
+                         "cooldown": cooldown_left(), "theme": theme_of(cfg, active_kid())}
+        if route == ("GET", "theme"):
+            return 200, {"theme": theme_of(cfg, active_kid()), "themes": THEMES}
+        if route == ("GET", "dance"):
+            until = paused_until(cfg)
+            return 200, {"songs": [{k: song[k] for k in ("id", "title")} for song in cfg.get("dance", [])],
+                         "paused": until is not None, "cooldown": cooldown_left(),
+                         "theme": theme_of(cfg, active_kid()), "party_max": DANCE_PARTY_MAX}
+        if route == ("POST", "theme"):
+            kid = active_kid()
+            set_theme(cfg, kid, arg)
+            return 200, {"theme": arg, "user": kid}
+        if route == ("GET", "themes"):
+            return 200, {"themes": cfg.get("themes", {}), "choices": THEMES, "default": DEFAULT_THEME}
+        if route == ("POST", "themes"):
+            set_theme(cfg, arg, parts[2] if len(parts) > 2 else None)
+            return 200, {"themes": cfg["themes"]}
+        if route == ("GET", "setup"):
+            return 200, {"linked": "account_token" in cfg, "account": cfg.get("account"),
+                         "profile": cfg.get("profile"), "server": cfg.get("server_name"),
+                         "tv": cfg.get("tv"), "movies": len(cfg["movies"]),
+                         "portal_url": f"http://{socket.gethostname()}.local:{LISTEN[1]}/",
+                         "portal_pin_set": "portal_pin" in cfg}
+        if route == ("POST", "portal-pin"):
+            set_portal_pin(cfg, self.body_json().get("pin", ""))
+            return 200, {"portal_pin_set": True}
+        if route == ("POST", "link"):
+            return 200, link_start(cfg)
+        if route == ("GET", "link"):
+            return 200, link_poll(cfg)
+        if route == ("GET", "profiles"):
+            return 200, {"profiles": profiles(cfg)}
+        if route == ("POST", "profile"):
+            use_profile(cfg, arg)
+            return 200, {"profile": cfg["profile"], "server": cfg["server_name"]}
+        if route == ("GET", "tvs"):
+            return 200, {"tvs": discover_tvs()}
+        if route == ("POST", "tv"):
+            tv = next(t for t in discover_tvs() if t["serial"] == arg)
+            cfg["tv"] = {k: tv[k] for k in ("serial", "ip", "name", "location")}
+            save(cfg)
+            return 200, {"tv": cfg["tv"]}
+        if route == ("GET", "library"):
+            return 200, {"movies": library(cfg, (query.get("q") or [""])[0])}
+        if route == ("POST", "movies"):
+            add_item(cfg, arg)
+            return 200, {"movies": len(cfg["movies"])}
+        if route == ("DELETE", "movies"):
+            remove_item(cfg, arg)
+            return 200, {"movies": len(cfg["movies"])}
+        if route == ("POST", "netflix"):
+            return 200, {"key": add_netflix(cfg, urllib.parse.unquote(arg or "")), "movies": len(cfg["movies"])}
+        raise KeyError(route)
+
+    def handle_portal(self, method, path, client):
+        """The parents' phone/computer portal: pause movie time, edit the list."""
+        if path.path in ("/", "/portal"):
+            return self.reply(200, PORTAL_PAGE.read_bytes(), "text/html; charset=utf-8")
+        parts = [p for p in path.path.split("/") if p][2:]  # drop "api", "portal"
+        route = (method, parts[0] if parts else "")
+        arg = parts[1] if len(parts) > 1 else None
+        cookies = dict(c.strip().split("=", 1) for c in (self.headers.get("Cookie") or "").split(";") if "=" in c)
+
+        if route == ("POST", "login"):
+            with lock:
+                token, error = portal_login(load(), str(client), self.body_json().get("pin", ""))
+            if error:
+                return self.reply(401, {"error": error})
+            cookie = (f"{PORTAL_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; "
+                      f"Max-Age={PORTAL_SESSION_DAYS * 86400}")
+            return self.reply(200, {"ok": True}, headers={"Set-Cookie": cookie})
+
+        query = urllib.parse.parse_qs(path.query)
+        kid = (query.get("kid") or [None])[0]
+        view = lambda cfg: for_kid(cfg, kid)
+        with lock:
+            cfg = load()
+            authed = portal_session_ok(cfg, cookies.get(PORTAL_COOKIE))
+        if authed and route == ("GET", "dance-library"):
+            q = (query.get("q") or [""])[0].lower()
+            with lock:
+                chosen = {song["id"] for song in view(load()).get("dance", [])}
+            found = [{**song, "chosen": song["id"] in chosen} for song in dance_channel()
+                     if q in song["full_title"].lower()]
+            return self.reply(200, {"songs": found[:150]})
+        if authed and route in (("POST", "dance"), ("POST", "dance-link")):
+            ref = self.body_json().get("ref", "") if route[1] == "dance-link" else arg
+            dance_channel()  # (slow the first time: before taking the config lock)
+            with lock:
+                cfg = view(load())
+                add_song(cfg, ref)
+                return self.reply(200, {"count": len(cfg["dance"])})
+        if authed and route == ("GET", "system"):
+            return self.reply(200, system_status())
+        if authed and route == ("GET", "now"):
+            return self.reply(200, tv_now())
+        if authed and route == ("POST", "tv-stop"):
+            return self.reply(200, tv_stop())
+        if authed and route == ("GET", "history"):
+            with side_lock:
+                events = read_side(HISTORY)
+            if kid:
+                events = [e for e in events if e["kid"] == kid]
+            return self.reply(200, {"events": events[-150:][::-1], "names": {k: kid_name(k) for k in kid_users()}})
+        if authed and route == ("GET", "volume"):
+            return self.reply(200, {"percent": kid_volume()})
+        if authed and route == ("POST", "volume"):
+            percent = self.body_json().get("percent")
+            if not isinstance(percent, int) or not 0 <= percent <= 100:
+                raise ValueError("volume must be 0 to 100")
+            return self.reply(200, {"percent": kid_volume(percent)})
+        with lock:
+            cfg = view(load())
+            if route == ("GET", "status") and not authed:
+                return self.reply(200, {"authed": False, "pin_set": "portal_pin" in cfg})
+            if not authed:
+                return self.reply(401, {"error": "Please enter the PIN."})
+            if route == ("GET", "status"):
+                until = paused_until(cfg)
+                tv = cfg.get("tv") or {}
+                return self.reply(200, {
+                    "authed": True, "paused": until is not None, "pause_text": pause_text(until),
+                    "tv": tv.get("location") or tv.get("name"), "kid": cfg.kid,
+                    "items": [{k: m.get(k) for k in ("key", "title", "year", "kind")} for m in cfg["movies"]]})
+            if route == ("GET", "kids"):
+                return self.reply(200, {"kids": [{"user": k, "name": kid_name(k)} for k in kid_users()]})
+            if route == ("GET", "schedule"):
+                allowed, message, left = kid_allowed(cfg.root, cfg.kid)
+                own = kid_settings(cfg.root, cfg.kid)
+                return self.reply(200, {"schedule": schedule_of(cfg.root, cfg.kid), "allowed": allowed,
+                                        "message": message, "minutes_left": left,
+                                        "used_today": minutes_used(cfg.kid),
+                                        "extra_until": own.get("extra_until", 0),
+                                        "sleep_until": own.get("sleep_until", 0)})
+            if route == ("POST", "schedule"):
+                set_schedule(cfg.root, cfg.kid, self.body_json())
+                return self.reply(200, {"schedule": schedule_of(cfg.root, cfg.kid)})
+            if route == ("POST", "extra"):
+                own = kid_settings(cfg.root, cfg.kid)
+                minutes = int(self.body_json().get("minutes", 30))
+                if not 1 <= minutes <= 12 * 60:
+                    raise ValueError("1 minute to 12 hours")
+                own["extra_until"] = max(time.time(), own.get("extra_until", 0)) + minutes * 60
+                own.pop("sleep_until", None)
+                save(cfg)
+                return self.reply(200, {"extra_until": own["extra_until"]})
+            if route == ("POST", "sleep"):
+                own = kid_settings(cfg.root, cfg.kid)
+                own["sleep_until"] = next_start(cfg.root, cfg.kid)
+                own.pop("extra_until", None)
+                save(cfg)
+                return self.reply(200, {"sleep_until": own["sleep_until"]})
+            if route == ("POST", "pause"):
+                set_pause(cfg.root, self.body_json().get("minutes"))
+                return self.reply(200, {"pause_text": pause_text(paused_until(cfg))})
+            if route == ("GET", "library"):
+                q = (urllib.parse.parse_qs(path.query).get("q") or [""])[0]
+                chosen = {m["key"] for m in cfg["movies"]}
+                return self.reply(200, {"items": [{**m, "chosen": m["key"] in chosen, "thumb": None}
+                                                  for m in library(cfg, q)]})
+            if route == ("POST", "items"):
+                add_item(cfg, arg)
+                return self.reply(200, {"count": len(cfg["movies"])})
+            if route == ("DELETE", "items"):
+                remove_item(cfg, arg)
+                return self.reply(200, {"count": len(cfg["movies"])})
+            if route == ("POST", "netflix"):
+                key = add_netflix(cfg, self.body_json().get("ref", ""))
+                return self.reply(200, {"key": key, "count": len(cfg["movies"])})
+            if route == ("GET", "dance"):
+                return self.reply(200, {"songs": cfg.get("dance", [])})
+            if route == ("DELETE", "dance"):
+                remove_song(cfg, arg)
+                return self.reply(200, {"count": len(cfg["dance"])})
+            if route == ("POST", "logout"):
+                cfg.get("portal_sessions", {}).pop(
+                    hashlib.sha256(cookies.get(PORTAL_COOKIE, "").encode()).hexdigest(), None)
+                save(cfg)
+                return self.reply(200, {"ok": True}, headers={"Set-Cookie": f"{PORTAL_COOKIE}=; Path=/; Max-Age=0"})
+        if route == ("GET", "poster"):
+            return self.reply(200, poster(cfg, arg or ""), "image/jpeg")
+        if route == ("GET", "dance-thumb"):
+            return self.reply(200, dance_thumb(arg or ""), "image/jpeg")
+        raise KeyError(route)
+
+    def do_GET(self):
+        self.handle_any("GET")
+
+    def do_POST(self):
+        self.handle_any("POST")
+
+    def do_DELETE(self):
+        self.handle_any("DELETE")
+
+
+def check():
+    """Every step of a play except the final command to the TV (nothing changes on screen)."""
+    cfg = load()
+    steps = [
+        ("Plex account linked", lambda: cfg.get("account") or None),
+        ("profile and server", lambda: f"{cfg['profile']} on {cfg['server_name']} via {cfg['server_url']}"),
+        ("server answers as the profile", lambda: str(len(plex_json(
+            cfg, f"{cfg['server_url']}/library/sections", cfg["server_token"])["MediaContainer"]
+            .get("Directory", []))) + " libraries"),
+        ("approved movies and shows", lambda: len(cfg["movies"]) or None),
+        ("TV", lambda: (lambda tv: tv and f"{tv['location']} / {tv['name']} at {tv['ip']}: {tv['power']}")(
+            find_tv(cfg))),
+        ("Plex open on the TV", lambda: companion_id(cfg["tv"]["ip"])),
+        ("reset to start", lambda: (lambda plex: str(reset_progress(
+            cfg, plex[0]["key"] if plex[0].get("kind") != "show" else pick_episode(cfg, plex[0]["key"]))))(
+            [m for m in cfg["movies"] if m.get("kind") != "netflix"])),
+        ("TV shows pick a random episode", lambda: ", ".join(
+            f"{m['title']} -> episode {pick_episode(cfg, m['key'])}" for m in cfg["movies"]
+            if m.get("kind") == "show") or "no shows on the list"),
+        ("Netflix on the TV", lambda: {True: "yes", False: None, None: "can't tell (app list blocked)"}[
+            roku_info(cfg["tv"]["ip"]).get("netflix")]),
+    ]
+    ok = True
+    for name, step in steps:
+        try:
+            result = step()
+        except Exception as e:  # report every step
+            result, ok = None, False
+            print(f"FAIL  {name}: {e!r}")
+            continue
+        ok &= result is not None
+        print(f"{'ok  ' if result is not None else 'FAIL'}  {name}: {result}")
+    return 0 if ok else 1
+
+
+def main():
+    if "--set-pin" in sys.argv:
+        # sudo -u tablet-movies tablet-movies-bridge --set-pin 1234
+        cfg = load()
+        set_portal_pin(cfg, sys.argv[sys.argv.index("--set-pin") + 1])
+        raise SystemExit("portal PIN set")
+    if "--check" in sys.argv:
+        raise SystemExit(check())
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    threading.Thread(target=seed_dance, daemon=True).start()
+    threading.Thread(target=count_usage, daemon=True).start()
+    server = http.server.ThreadingHTTPServer(LISTEN, Handler)
+    print(f"listening on {LISTEN[0]}:{LISTEN[1]}", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

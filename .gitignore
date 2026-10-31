@@ -1,0 +1,11 @@
+# Large or machine-specific: never in the repo.
+iso/
+vm/
+*.apk
+__pycache__/
+# Secrets live only on each box (/etc/tablet-os, /var/lib/tablet-movies).
+*.keystore
+deploy_key*
+plex-*.json
+# Personal working notes (household details, devices, history): local only.
+CLAUDE.local.md
