@@ -65,7 +65,9 @@ gitignored.)
   position are the only reliable "is it really playing" signal; Plex's own
   timeline `location` always says "navigation".
 - **Netflix**: `launch/12?contentId=<id>&mediaType=series|movie`; it resumes, so
-  the bridge rewinds (Rev x3, wait ~position/5, Play) when it starts >15 s in.
+  the bridge rewinds (Rev x3, then Play as soon as `media-player` shows the
+  position under 3 s or stopped near 0; ~position/5 is only the fallback
+  limit) when it starts >15 s in.
   Title, art and show/movie come from the public title page (og: tags; the
   TVSeries marker is ~2 MB in, read incrementally).
 - **YouTube** (Dance): `launch/837?contentID=<id>` opens on a profile picker

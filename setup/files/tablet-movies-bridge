@@ -1029,9 +1029,35 @@ def netflix_from_start(ip):
     for _ in range(3):
         fetch(f"http://{ip}:8060/keypress/Rev", "POST", timeout=5)
         time.sleep(0.4)
-    time.sleep(min(90, 6 + ms / 1000 / 5))  # overshooting just waits at 0:00
+    how = rewind_until_start(ip, ms)
     fetch(f"http://{ip}:8060/keypress/Play", "POST", timeout=5)
-    print(f"Netflix started {ms // 1000}s in; rewound to the start", flush=True)
+    print(f"Netflix started {ms // 1000}s in; rewound to the start ({how})", flush=True)
+
+
+def rewind_until_start(ip, start_ms):
+    """Wait out a rewind that's running, watching the Roku's position, and
+    return as soon as it reaches the start, so a title 20 s in plays again
+    within a couple of seconds and one 30 min in only takes as long as it needs.
+    It counts as at the start when the position is under 3 s, or when it went
+    down and then stayed put within 15 s of the start. If the Roku never reports
+    a moving position, it falls back to the old estimate (~position/5)."""
+    deadline = time.time() + min(90, 6 + start_ms / 1000 / 5)
+    last, moved, still = start_ms, False, 0
+    while time.time() < deadline:
+        time.sleep(0.5)
+        _, ms = roku_player(ip)
+        if not ms and not moved:
+            continue  # no answer (or a blank position) before it's moving
+        if ms < 3000:
+            return f"reached {ms // 1000}s"
+        if ms < last:
+            moved, still = True, 0
+        elif moved and ms == last and ms < 15000:  # a mid-way stall keeps waiting
+            still += 1
+            if still >= 2:  # a second without moving: stopped at the start
+                return f"stopped at {ms // 1000}s"
+        last = ms
+    return "waited the estimate" if not moved else f"timed out at {last // 1000}s"
 
 
 def wait_for(check, seconds):
