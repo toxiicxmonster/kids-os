@@ -229,7 +229,8 @@ public class MoviesActivity extends Activity {
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int side = dp(32);
         int gap = dp(24);
-        int tileW = (screenW - 2 * side - (columns - 1) * gap) / columns;
+        int right = side + dp(ScrollRail.WIDTH_DP + 24);  // room for the scroll rail
+        int tileW = (screenW - side - right - (columns - 1) * gap) / columns;
         int posterW = tileW - dp(20);  // tile padding: 10dp each side
         int posterH = posterW * 3 / 2;
 
@@ -239,7 +240,7 @@ public class MoviesActivity extends Activity {
         LinearLayout grid = new LinearLayout(this);
         grid.setOrientation(LinearLayout.VERTICAL);
         // Top padding keeps the first row clear of the home button.
-        grid.setPadding(side, dp(136), side, dp(48));
+        grid.setPadding(side, dp(136), right, dp(48));
         scroller.addView(grid);
 
         LinearLayout row = null;
@@ -292,7 +293,18 @@ public class MoviesActivity extends Activity {
             lp.leftMargin = i % columns == 0 ? 0 : gap;
             row.addView(tile, lp);
         }
-        return scroller;
+        return withRail(scroller, dp(24), dp(24));
+    }
+
+    /** The list with a big scroll bar (ScrollRail) down its right side. */
+    private View withRail(ScrollView scroller, int top, int bottom) {
+        FrameLayout box = new FrameLayout(this);
+        box.addView(scroller, fill());
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                dp(ScrollRail.WIDTH_DP), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END);
+        lp.setMargins(0, top, dp(24), bottom);
+        box.addView(new ScrollRail(this, scroller, NAVY, this::tapFeedback), lp);
+        return box;
     }
 
     private void play(String key) {

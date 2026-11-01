@@ -69,7 +69,14 @@ gitignored.)
   position under 3 s or stopped near 0; ~position/5 is only the fallback
   limit) when it starts >15 s in.
   Title, art and show/movie come from the public title page (og: tags; the
-  TVSeries marker is ~2 MB in, read incrementally).
+  TVSeries marker is ~2 MB in, read incrementally). That art is wide, and the
+  title's own portrait boxshot isn't on its page, so shows get their poster
+  from TVmaze (`api.tvmaze.com/search/shows`, no key; best match only if the
+  name is close). Movies, or shows TVmaze can't match, fall back to the wide
+  art composited onto a 2:3 card.
+- **Kid lists** (Movies & TV, Dance) have a `ScrollRail` on the right (▲, a
+  draggable track, ▼), so a kid can scroll without touching a poster. The
+  same class is copied into each app's package, so keep the copies in step.
 - **YouTube** (Dance): `launch/837?contentID=<id>` opens on a profile picker
   ~15-25 s later; Select there, never while playing (OK = pause). Ads run on
   their own position counter before the song; YouTube's position stops a few

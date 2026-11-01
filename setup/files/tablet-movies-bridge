@@ -485,13 +485,17 @@ def pick_episode(cfg, show_key):
 def poster(cfg, key):
     POSTERS.mkdir(mode=0o700, parents=True, exist_ok=True)
     netflix = key.startswith("nf")
-    path = POSTERS / (f"nf{int(key[2:])}.jpg" if netflix else f"{int(key)}.jpg")
+    # ".2": Netflix shows now get real posters, so the old composites are skipped.
+    path = POSTERS / (f"nf{int(key[2:])}.2.jpg" if netflix else f"{int(key)}.jpg")
     if not path.exists():
         movie = next((m for m in cfg["movies"] if m["key"] == key), None)
         if not movie or not movie.get("thumb"):
             raise KeyError(key)
         if netflix:
-            data = netflix_poster(fetch(movie["thumb"], raw=True))
+            data = None
+            if movie.get("netflix_type") == "series":
+                data = tvmaze_poster(movie["title"])
+            data = data or netflix_poster(fetch(movie["thumb"], raw=True))
         else:
             q = urllib.parse.urlencode({"width": 400, "height": 600, "minSize": 1, "url": movie["thumb"]})
             data = fetch(f"{cfg['server_url']}/photo/:/transcode?{q}",
@@ -501,6 +505,33 @@ def poster(cfg, key):
         tmp.replace(path)
         return data
     return path.read_bytes()
+
+
+def tvmaze_poster(title):
+    """A 400x600 poster for a TV show, the same shape and style as Plex's,
+    from TVmaze (free, no key; 680x1000 show posters). Only TVmaze's best
+    match, and only if its name is close to the title; None if there isn't one."""
+    import difflib
+    from PIL import Image
+    squash = lambda s: re.sub(r"[^a-z0-9]", "", s.lower().replace("’", "'"))
+    try:
+        hits = json.loads(fetch("https://api.tvmaze.com/search/shows?" +
+                                urllib.parse.urlencode({"q": title}), timeout=10))
+        show = hits[0]["show"] if hits else None
+        image = show and (show.get("image") or {}).get("original")
+        if not image or difflib.SequenceMatcher(None, squash(title), squash(show["name"])).ratio() < 0.6:
+            print(f"no TVmaze poster for {title!r}", flush=True)
+            return None
+        art = Image.open(io.BytesIO(fetch(image, raw=True, timeout=15))).convert("RGB")
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        print(f"TVmaze poster for {title!r} failed: {e!r}", flush=True)
+        return None
+    scale = max(400 / art.width, 600 / art.height)
+    art = art.resize((round(art.width * scale), round(art.height * scale)), Image.LANCZOS)
+    left, top = (art.width - 400) // 2, (art.height - 600) // 2
+    out = io.BytesIO()
+    art.crop((left, top, left + 400, top + 600)).save(out, "JPEG", quality=88)
+    return out.getvalue()
 
 
 def netflix_poster(art):

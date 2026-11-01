@@ -221,7 +221,8 @@ public class DanceActivity extends Activity {
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int side = dp(32);
         int gap = dp(24);
-        int tileW = (screenW - 2 * side - (columns - 1) * gap) / columns;
+        int right = side + dp(ScrollRail.WIDTH_DP + 24);  // room for the scroll rail
+        int tileW = (screenW - side - right - (columns - 1) * gap) / columns;
         int thumbW = tileW - dp(20);
         int thumbH = thumbW * 9 / 16;
 
@@ -231,7 +232,7 @@ public class DanceActivity extends Activity {
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         // Clear of the home and mode buttons at the top and "Let's dance!" at the bottom.
-        list.setPadding(side, dp(136), side, dp(150));
+        list.setPadding(side, dp(136), right, dp(150));
         scroller.addView(list);
 
         badges.clear();
@@ -307,7 +308,18 @@ public class DanceActivity extends Activity {
             lp.leftMargin = i % columns == 0 ? 0 : gap;
             row.addView(tile, lp);
         }
-        return scroller;
+        return withRail(scroller, dp(24), dp(24));
+    }
+
+    /** The list with a big scroll bar (ScrollRail) down its right side. */
+    private View withRail(ScrollView scroller, int top, int bottom) {
+        FrameLayout box = new FrameLayout(this);
+        box.addView(scroller, fill());
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                dp(ScrollRail.WIDTH_DP), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END);
+        lp.setMargins(0, top, dp(24), bottom);
+        box.addView(new ScrollRail(this, scroller, PINK, this::tapFeedback), lp);
+        return box;
     }
 
     /** "One song" / "Dance party", top middle. */
