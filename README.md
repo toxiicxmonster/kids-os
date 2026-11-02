@@ -33,7 +33,7 @@ lands straight in their own Android; nothing else on the PC is reachable.
   shows get proper portrait posters (from TVmaze).
 - **Dance**: YouTube music videos the parents picked (e.g. Danny Go!) on the TV,
   without anyone hunting with the remote.
-- **Paint**: fill and brush tools, 11 colors, undo (wiping the page included)
+- **Paint**: fill and brush tools, 20 colors (skin tones included), undo (wiping the page included)
   and blank paper or coloring pages. Pages are downloaded to the box once and
   turned into clean black lines, so fills stop at the edges and it all works
   without the internet.

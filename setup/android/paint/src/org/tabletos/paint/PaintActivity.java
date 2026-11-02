@@ -62,11 +62,19 @@ public class PaintActivity extends Activity {
     private static final int NAVY = Color.rgb(0x0d, 0x47, 0xa1);
     private static final int ORANGE = Color.rgb(0xff, 0x8a, 0x00);
     private static final String BLANK = "blank";
+    /** Two rows of color dots: the rainbow, then skin tones (light to deep) and the rest. */
+    private static final int COLORS_PER_ROW = 10;
     private static final int[] COLORS = {
+            // red, orange, yellow, light green, green, teal, sky blue, blue, purple, pink
             Color.rgb(0xe5, 0x39, 0x35), Color.rgb(0xff, 0x8f, 0x00), Color.rgb(0xfd, 0xd8, 0x35),
-            Color.rgb(0x43, 0xa0, 0x47), Color.rgb(0x29, 0xb6, 0xf6), Color.rgb(0x1e, 0x40, 0xd8),
-            Color.rgb(0x8e, 0x24, 0xaa), Color.rgb(0xff, 0x6f, 0xb5), Color.rgb(0x79, 0x55, 0x48),
-            Color.rgb(0x21, 0x21, 0x21), Color.WHITE,
+            Color.rgb(0x9c, 0xcc, 0x65), Color.rgb(0x43, 0xa0, 0x47), Color.rgb(0x26, 0xa6, 0x9a),
+            Color.rgb(0x29, 0xb6, 0xf6), Color.rgb(0x1e, 0x40, 0xd8), Color.rgb(0x8e, 0x24, 0xaa),
+            Color.rgb(0xff, 0x6f, 0xb5),
+            // light pink, five skin tones, dark brown, gray, black, white
+            Color.rgb(0xf8, 0xbb, 0xd0), Color.rgb(0xff, 0xe0, 0xbd), Color.rgb(0xf1, 0xc2, 0x7d),
+            Color.rgb(0xe0, 0xac, 0x69), Color.rgb(0xc6, 0x86, 0x42), Color.rgb(0x8d, 0x55, 0x24),
+            Color.rgb(0x5d, 0x40, 0x37), Color.rgb(0x9e, 0x9e, 0x9e), Color.rgb(0x21, 0x21, 0x21),
+            Color.WHITE,
     };
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
@@ -140,9 +148,12 @@ public class PaintActivity extends Activity {
         int margin = dp(20);
         // Six round buttons down the left (home + 5 tools), as big as fit.
         int tool = Math.min(dp(92), (screenH - 2 * margin) / 6 - dp(10));
-        // Eleven color dots along the bottom.
+        // Two rows of color dots along the bottom.
         int left = margin + tool + margin;
-        int dot = Math.min(dp(84), (screenW - left - margin) / COLORS.length - dp(10));
+        int dot = Math.min(dp(76), (screenW - left - margin) / COLORS_PER_ROW - dp(10));
+        int rows = (COLORS.length + COLORS_PER_ROW - 1) / COLORS_PER_ROW;
+        int dotGap = dp(8);
+        int colorsH = rows * dot + (rows - 1) * dotGap + dp(12);
 
         // The paper: a white card between the tools and the colors.
         FrameLayout card = new FrameLayout(this);
@@ -157,7 +168,7 @@ public class PaintActivity extends Activity {
         card.addView(paper, fill());
         FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        cardLp.setMargins(left, margin, margin, margin + dot + dp(16));
+        cardLp.setMargins(left, margin, margin, margin + colorsH + dp(8));
         root.addView(card, cardLp);
 
         LinearLayout tools = new LinearLayout(this);
@@ -177,10 +188,23 @@ public class PaintActivity extends Activity {
         root.addView(tools, toolsLp);
 
         LinearLayout colors = new LinearLayout(this);
-        colors.setOrientation(LinearLayout.HORIZONTAL);
+        colors.setOrientation(LinearLayout.VERTICAL);
         colors.setGravity(Gravity.CENTER);
         dots.clear();
-        for (int c : COLORS) {
+        LinearLayout row = null;
+        for (int i = 0; i < COLORS.length; i++) {
+            int c = COLORS[i];
+            if (i % COLORS_PER_ROW == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER);
+                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dot);
+                if (i > 0) {
+                    rowLp.topMargin = dotGap;
+                }
+                colors.addView(row, rowLp);
+            }
             TextView d = new TextView(this);
             GradientDrawable circle = new GradientDrawable();
             circle.setShape(GradientDrawable.OVAL);
@@ -192,11 +216,11 @@ public class PaintActivity extends Activity {
             d.setOnClickListener(v -> tapFeedback(v, () -> pickColor(c)));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dot, dot);
             lp.setMargins(dp(5), 0, dp(5), 0);
-            colors.addView(d, lp);
+            row.addView(d, lp);
             dots.add(d);
         }
         FrameLayout.LayoutParams colorsLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dot + dp(12), Gravity.BOTTOM);
+                ViewGroup.LayoutParams.MATCH_PARENT, colorsH, Gravity.BOTTOM);
         colorsLp.setMargins(left, 0, margin, margin);
         root.addView(colors, colorsLp);
 
