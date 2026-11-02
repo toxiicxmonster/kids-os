@@ -258,9 +258,13 @@ public class HomeActivity extends Activity {
     /** In the carousel until the parent first changes the list: PBS KIDS (the main app) and our apps. */
     private static final Set<String> DEFAULT_APPROVED =
             Set.of("org.pbskids.gamesapp", "org.tabletos.movies", "org.tabletos.dance");
-    /** Our own apps: each goes into the carousel the first time it's seen (the parent can switch it off). */
-    private static final Set<String> BUILT_IN = Set.of("org.tabletos.movies", "org.tabletos.dance");
+    /** Our own apps, and ones the owner picked (Khan Academy Kids): each goes into the
+     *  carousel once, the first time it's seen (the parent can switch it off). */
+    private static final Set<String> BUILT_IN = Set.of("org.tabletos.movies", "org.tabletos.dance",
+            "org.tabletos.paint", "org.khanacademy.khankids");
     private static final String KEY_SEEN_BUILT_IN = "seen_built_in";
+    /** When the kid last opened an app ("used_" + package): the newest goes first in the carousel. */
+    private static final String KEY_USED = "used_";
 
     private Set<String> approved() {
         Set<String> apps = new HashSet<>(prefs.getStringSet(KEY_APPROVED, DEFAULT_APPROVED));
@@ -384,6 +388,7 @@ public class HomeActivity extends Activity {
         if (intent == null) {
             return;
         }
+        prefs.edit().putLong(KEY_USED + pkg, System.currentTimeMillis()).apply();
         try {
             Themes.report(getPackageManager().getApplicationLabel(
                     getPackageManager().getApplicationInfo(pkg, 0)).toString());
@@ -445,6 +450,10 @@ public class HomeActivity extends Activity {
                 apps.add(ri);
             }
         }
+        // The app used most recently first, so "the one I was just playing" is
+        // right there; apps never opened keep their A-Z order after those.
+        apps.sort((a, b) -> Long.compare(prefs.getLong(KEY_USED + b.activityInfo.packageName, 0),
+                prefs.getLong(KEY_USED + a.activityInfo.packageName, 0)));
         if (apps.isEmpty()) {
             TextView empty = text("Ask a grown-up to add some apps", 36, Color.rgb(0x0d, 0x47, 0xa1));
             empty.setGravity(Gravity.CENTER);

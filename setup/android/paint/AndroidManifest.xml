@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Paint: finger painting and coloring pages; the parents choose the pages on
+     the Movies & TV web page's Coloring tab, and the host keeps them locally. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.tabletos.paint"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Cleartext only to the host bridge on the private Waydroid network. -->
+    <application
+        android:label="Paint"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar.Fullscreen">
+
+        <activity
+            android:name=".PaintActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

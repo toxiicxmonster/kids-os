@@ -45,6 +45,19 @@ gitignored.)
   `KidView` (lists) and `kid_settings` (schedule, overrides); minute-by-minute
   usage and history live in their own files (config writes re-trigger the
   login-screen sync).
+- **Paint** (`android/paint`): fill/brush on coloring pages or blank paper,
+  undo (wipe included), each page's painting saved in the kid's Android. Pages
+  are Openclipart (public domain): the bridge downloads each once
+  (`/image/2000px/<id>`), makes it pure black lines on white (threshold 170,
+  lines thickened so fills don't leak) and keeps it in
+  `/var/lib/tablet-movies/coloring/`. A starter set is added on first run;
+  parents add/remove pages on the web page's Coloring tab (shared by all kids).
+- **Carousel order**: the app opened most recently first (Tablet Home prefs
+  `used_<package>`, so per kid). `BUILT_IN` packages (ours, plus Khan Academy
+  Kids) are switched on once when first seen.
+- **Favorites** in Movies & TV: titles the kid picked twice or more in the last
+  30 days come first (up to 8); the web page has a "This week" card
+  (`/api/portal/week`).
 - **Parent switch** (`files/tablet-parent-switch`, root, evdev): corner taps /
   key combo end the kids' sessions (SIGTERM everything but
   `gdm-session-worker`; `loginctl terminate-user` would break GDM), restarts GDM

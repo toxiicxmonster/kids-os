@@ -19,7 +19,7 @@ import android.widget.TextView;
  * lands on a list item, so there's nothing to pick by accident. The arrows
  * move about a screenful (smoothly, so the kid sees where things went); the
  * track jumps or drags to a spot. It hides itself when everything fits.
- * (The same file is in the movies and dance apps, each in its own package.)
+ * (The same file is in the movies, dance and paint apps, each in its own package.)
  */
 final class ScrollRail extends LinearLayout {
     interface Feedback {

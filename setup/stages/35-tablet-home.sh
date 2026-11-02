@@ -75,7 +75,7 @@ if [[ ! -x $SDK/build-tools/34.0.0/aapt2 ]]; then
   yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null || true
   "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" "platforms;android-33" "build-tools;34.0.0"
 fi
-APPS=(tablet-home movies dance)
+APPS=(tablet-home movies dance paint)
 for app in "${APPS[@]}"; do
   ANDROID_SDK_ROOT=$SDK bash "$TABLET_DIR/android/build.sh" "$app" "/usr/local/share/tablet-os/$app.apk"
   # Each kid's own Android installs a newer build at their next login (tablet-android).

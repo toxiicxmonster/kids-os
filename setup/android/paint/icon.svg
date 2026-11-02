@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Paint app icon: a painter's palette with blobs of color and a brush, on a yellow circle. -->
+  <circle cx="256" cy="256" r="240" fill="#ffd54f" stroke="#0d47a1" stroke-width="16"/>
+  <path d="M256 104c-92 0-160 62-160 140 0 70 52 120 112 120 26 0 30-18 26-36-4-20 6-34 28-34h38c56 0 96-38 96-84 0-62-62-106-140-106z"
+        fill="#fff" stroke="#0d47a1" stroke-width="14" stroke-linejoin="round"/>
+  <circle cx="176" cy="226" r="24" fill="#e53935"/>
+  <circle cx="226" cy="168" r="24" fill="#fdd835" stroke="#0d47a1" stroke-width="3"/>
+  <circle cx="298" cy="166" r="24" fill="#43a047"/>
+  <circle cx="350" cy="218" r="24" fill="#1e88e5"/>
+  <circle cx="178" cy="296" r="20" fill="#8e24aa"/>
+  <g transform="rotate(40 360 360)">
+    <rect x="344" y="250" width="32" height="150" rx="12" fill="#8d6e63" stroke="#0d47a1" stroke-width="10"/>
+    <path d="M340 402h40l-6 44c-2 16-26 16-28 0z" fill="#ff6fb5" stroke="#0d47a1" stroke-width="10" stroke-linejoin="round"/>
+  </g>
+</svg>

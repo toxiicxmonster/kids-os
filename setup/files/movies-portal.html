@@ -59,6 +59,22 @@
   .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
   .inline input[type=time] { width: auto; }
   .inline select { font: inherit; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  .pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
+  .page { position: relative; border: 1px solid var(--line); border-radius: 12px; background: #fff;
+          padding: 6px; text-align: center; color: #1d2733; font-size: 13px; cursor: pointer; }
+  .page img { width: 100%; aspect-ratio: 1; object-fit: contain; display: block; }
+  .page.chosen { outline: 3px solid var(--green); }
+  .page .x { position: absolute; top: 2px; right: 2px; background: var(--card); color: var(--red);
+             border-radius: 50%; width: 30px; height: 30px; padding: 0; line-height: 30px; }
+  .bars { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: end; height: 130px; margin: 6px 0 4px; }
+  .bar { background: var(--sky); border-radius: 6px 6px 2px 2px; min-height: 2px; }
+  .bar.today { background: var(--navy); }
+  .barlabels { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; text-align: center; font-size: 12px; color: var(--muted); }
+  .barlabels b { display: block; color: var(--ink); font-size: 13px; }
+  .tops { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .tops h3 { font-size: 14px; margin: 0 0 4px; }
+  .tops ol { margin: 0; padding-left: 20px; font-size: 14px; }
+  @media (max-width: 480px) { .tops { grid-template-columns: 1fr; } }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -138,6 +154,7 @@
     <nav class="tabs">
       <button id="tabMoviesBtn" class="on">🎬 Movies &amp; TV</button>
       <button id="tabDanceBtn">💃 Dance</button>
+      <button id="tabColorBtn">🖍️ Coloring</button>
     </nav>
 
     <div id="tabMovies">
@@ -192,6 +209,32 @@
       <p class="msg" id="dLinkMsg">Paste the link of any music video (Share → Copy link in the YouTube app).</p>
     </section>
     </div>
+
+    <div id="tabColor" hidden>
+    <section class="card">
+      <h2>Coloring pages <span id="colorCount" class="sub"></span></h2>
+      <div id="colorItems" class="pages"><p class="msg">Loading…</p></div>
+      <p class="msg">The pages in the Paint app, shared by all the kids. They're kept on the tablet,
+        so they work even when the internet is down. Tap ✕ to take one off.</p>
+    </section>
+
+    <section class="card">
+      <h2>Add coloring pages</h2>
+      <div class="search">
+        <input id="cq" placeholder="Try: dog, truck, dinosaur, princess" enterkeyhint="search">
+        <button class="primary" id="cSearchBtn">Search</button>
+      </div>
+      <div id="cResults" class="pages"></div>
+      <p class="msg">From <a href="https://openclipart.org" target="_blank" rel="noopener">Openclipart</a>:
+        free, public-domain drawings. Simple pictures with big shapes work best for little fingers.
+        Tap one to add it.</p>
+    </section>
+    </div>
+
+    <section class="card">
+      <h2>📊 This week <span id="weekKid" class="sub"></span></h2>
+      <div id="week"><p class="msg">Loading…</p></div>
+    </section>
 
     <section class="card">
       <h2>🕘 History <span id="histKid" class="sub"></span></h2>
@@ -360,12 +403,120 @@ let volumeLoaded = false;
 function showTab(name) {
   $("tabMovies").hidden = name !== "movies";
   $("tabDance").hidden = name !== "dance";
+  $("tabColor").hidden = name !== "color";
   $("tabMoviesBtn").classList.toggle("on", name === "movies");
   $("tabDanceBtn").classList.toggle("on", name === "dance");
+  $("tabColorBtn").classList.toggle("on", name === "color");
   if (name === "dance") refreshDance();
+  if (name === "color") refreshColoring().catch(() => {});
 }
 $("tabMoviesBtn").onclick = () => showTab("movies");
 $("tabDanceBtn").onclick = () => showTab("dance");
+$("tabColorBtn").onclick = () => showTab("color");
+
+// ---- Coloring pages -----------------------------------------------------------------
+function pageTile(p, src, onTap, removable) {
+  const tile = document.createElement("div");
+  tile.className = "page" + (p.chosen ? " chosen" : "");
+  const img = document.createElement("img");
+  img.loading = "lazy"; img.alt = ""; img.src = src;
+  const name = document.createElement("div");
+  name.textContent = p.title;
+  tile.append(img, name);
+  if (removable) {
+    const x = document.createElement("button");
+    x.className = "x"; x.textContent = "✕"; x.title = "Take it off";
+    x.onclick = (ev) => { ev.stopPropagation(); onTap(tile); };
+    tile.append(x);
+  } else if (onTap) {
+    tile.onclick = () => onTap(tile);
+  }
+  return tile;
+}
+async function refreshColoring() {
+  const r = await api("GET", "coloring");
+  $("colorCount").textContent = "· " + r.pages.length;
+  const box = $("colorItems");
+  if (!r.pages.length) { box.innerHTML = "<p class='msg'>None yet: add some below.</p>"; return; }
+  box.replaceChildren(...r.pages.map((p) => pageTile(p, "/api/portal/coloring-page/" + p.id, async (tile) => {
+    tile.style.opacity = .4;
+    try { await api("DELETE", "coloring/" + p.id); } catch (e) { alert(e.message); }
+    refreshColoring().catch(() => {});
+  }, true)));
+}
+async function colorSearch() {
+  const q = $("cq").value.trim();
+  const box = $("cResults");
+  if (!q) return;
+  box.innerHTML = "<p class='msg'>Searching…</p>";
+  try {
+    const r = await api("GET", "coloring-search?q=" + encodeURIComponent(q));
+    if (!r.pages.length) { box.innerHTML = "<p class='msg'>Nothing found. Try a simpler word.</p>"; return; }
+    box.replaceChildren(...r.pages.map((p) => pageTile(p, "https://openclipart.org/image/400px/" + p.id, async (tile) => {
+      if (tile.classList.contains("chosen") || tile.dataset.busy) return;
+      tile.dataset.busy = 1; tile.style.opacity = .5;
+      try {
+        await api("POST", "coloring/" + p.id, {title: p.title});
+        tile.classList.add("chosen");
+        refreshColoring().catch(() => {});
+      } catch (e) { if (e.message !== "locked") alert(e.message); }
+      tile.style.opacity = 1; delete tile.dataset.busy;
+    })));
+  } catch (e) {
+    if (e.message === "locked") return;
+    const p = document.createElement("p"); p.className = "msg error"; p.textContent = e.message;
+    box.replaceChildren(p);
+  }
+}
+$("cSearchBtn").onclick = colorSearch;
+$("cq").onkeydown = (e) => { if (e.key === "Enter") colorSearch(); };
+
+// ---- this week ---------------------------------------------------------------------------
+const hm = (m) => m >= 60 ? Math.floor(m / 60) + " h " + (m % 60 ? m % 60 + " min" : "") : m + " min";
+async function loadWeek() {
+  const r = await api("GET", "week");
+  const box = $("week");
+  const most = Math.max(30, ...r.days.map((d) => d.minutes));
+  const bars = document.createElement("div"); bars.className = "bars";
+  const labels = document.createElement("div"); labels.className = "barlabels";
+  r.days.forEach((d, i) => {
+    const bar = document.createElement("div");
+    bar.className = "bar" + (i === r.days.length - 1 ? " today" : "");
+    bar.style.height = (100 * d.minutes / most) + "%";
+    bar.title = d.minutes + " min";
+    bars.append(bar);
+    const day = new Date(d.date + "T12:00:00");
+    const l = document.createElement("div");
+    l.innerHTML = "<b></b><span></span>";
+    l.firstChild.textContent = d.minutes;
+    l.lastChild.textContent = i === r.days.length - 1 ? "Today" : day.toLocaleDateString([], {weekday: "short"});
+    labels.append(l);
+  });
+  const summary = document.createElement("p");
+  summary.className = "msg";
+  const avg = Math.round(r.total / 7);
+  let line = "Tablet time: " + hm(r.total) + " this week (about " + hm(avg) + " a day)";
+  if (r.prev_total) {
+    const diff = r.total - r.prev_total;
+    line += diff === 0 ? ", same as last week" : ", " + hm(Math.abs(diff)) + (diff > 0 ? " more" : " less") + " than last week";
+  }
+  summary.textContent = line + ". Bars are minutes per day.";
+  const tops = document.createElement("div"); tops.className = "tops";
+  const list = (title, items, extra) => {
+    const col = document.createElement("div");
+    col.innerHTML = "<h3></h3>";
+    col.firstChild.textContent = title;
+    if (!items.length && !extra) { const p = document.createElement("p"); p.className = "msg"; p.textContent = "Nothing yet."; col.append(p); }
+    const ol = document.createElement("ol");
+    for (const it of items) { const li = document.createElement("li"); li.textContent = it.title + (it.count > 1 ? " ×" + it.count : ""); ol.append(li); }
+    col.append(ol);
+    if (extra) { const p = document.createElement("p"); p.className = "msg"; p.textContent = extra; col.append(p); }
+    return col;
+  };
+  tops.append(list("📺 Watched most", r.watched, r.dances ? "💃 Dance: " + r.dances + (r.dances > 1 ? " times" : " time") : ""),
+              list("📱 Apps opened most", r.apps));
+  box.replaceChildren(bars, labels, summary, tops);
+}
 
 // ---- Dance -------------------------------------------------------------------
 const minutes = (sec) => Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
@@ -447,13 +598,15 @@ async function loadKids() {
     b.onclick = () => { currentKid = k.user; loadKids(); refreshAll(); };
     return b;
   }));
-  for (const id of ["schedKid", "histKid"]) $(id).textContent = r.kids.length > 1 ? "· " + kidNames[currentKid] : "";
+  for (const id of ["schedKid", "histKid", "weekKid"]) $(id).textContent = r.kids.length > 1 ? "· " + kidNames[currentKid] : "";
 }
 async function refreshAll() {
   await refresh().catch(() => {});
   if (!$("tabDance").hidden) refreshDance().catch(() => {});
   loadSchedule().catch(() => {});
   loadHistory().catch(() => {});
+  loadWeek().catch(() => {});
+  if (!$("tabColor").hidden) refreshColoring().catch(() => {});
 }
 
 // ---- on the TV now -----------------------------------------------------------------

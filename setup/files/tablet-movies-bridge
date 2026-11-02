@@ -17,6 +17,7 @@ Kid endpoints (anyone on the Waydroid network):
   GET  /api/theme               the logged-in kid's theme; POST /api/theme/<name> sets it
   GET  /api/dance               the Dance app's songs; GET /api/dance-thumb/<id> a picture
   POST /api/dance-play/<id,...> play the songs on the TV (YouTube), one after another
+  GET  /api/coloring            the Paint app's coloring pages; GET /api/coloring-page/<id> one (PNG)
   GET  /api/allowed             may the logged-in kid use the tablet now (bedtime/limits)
   POST /api/activity?title=     the kid opened an app (for the parents' history)
 Lists, schedules and history are per kid (the kidsos-kids group); kid routes use
@@ -50,6 +51,9 @@ Web portal for the parents' phones (home network only, PIN-protected):
   GET  /api/portal/system       TV, Plex, last update, disk space, uptime
   GET  /api/portal/dance        the Dance songs; POST/DELETE /api/portal/dance/<id>
   GET  /api/portal/dance-library?q=  Danny Go! songs; POST /api/portal/dance-link {"ref"}
+  GET  /api/portal/week         the last 7 days: minutes per day, top shows and apps (?kid=)
+  GET  /api/portal/coloring     the coloring pages; GET coloring-search?q= (Openclipart),
+                                POST/DELETE /api/portal/coloring/<id> ({"title"}) add/remove
 """
 import collections.abc
 import copy
@@ -85,6 +89,17 @@ import xml.etree.ElementTree as ET
 STATE = pathlib.Path(os.environ.get("TABLET_MOVIES_STATE", "/var/lib/tablet-movies"))
 CONFIG = STATE / "config.json"
 POSTERS = STATE / "posters"
+COLORING = STATE / "coloring"  # coloring pages, downloaded once and kept here (PNG, black lines on white)
+# Pages every tablet starts with: simple, big-shape line art from Openclipart
+# (all public domain), picked for a 3-year-old.
+COLORING_STARTER = [
+    ("312543", "Kitty"), ("87061", "Puppy"), ("352670", "Butterfly"), ("74749", "Lion"),
+    ("164587", "Fire truck"), ("272531", "Rocket"), ("8546", "Apple"), ("352672", "Flower"),
+    ("75271", "Owl"), ("74233", "Turtle"), ("213606", "Bunny"), ("75889", "Duck"),
+    ("190559", "Frog"), ("228075", "Airplane"), ("180898", "Sun"), ("1384", "Dinosaur"),
+    ("333629", "Eel"), ("177816", "Elephant"),
+]
+OPENCLIPART = "https://openclipart.org"
 PARENT_USER = os.environ.get("PARENT_USER", "parent")
 LISTEN = ("0.0.0.0", int(os.environ.get("TABLET_MOVIES_PORT", "8766")))
 ALLOWED_CLIENTS = [ipaddress.ip_network("192.168.240.0/24"), ipaddress.ip_network("127.0.0.0/8")]
@@ -1249,6 +1264,126 @@ def add_history(kid, kind, title):
         write_side(HISTORY, history[-1000:])
 
 
+WATCH_KINDS = ("movie", "show", "netflix")
+
+
+def favorites_first(movies, kid, days=30, most=8):
+    """The kid's list with their favorites at the front: titles they picked at
+    least twice in the last month, most-picked first (at most two rows); the
+    rest stay in their usual order, so the list doesn't shuffle around."""
+    if not kid:
+        return list(movies)
+    since = time.time() - days * 86400
+    with side_lock:
+        events = read_side(HISTORY)
+    picks = collections.Counter(e["title"] for e in events
+                                if e["kid"] == kid and e["t"] >= since and e["kind"] in WATCH_KINDS)
+    favorites = sorted((m for m in movies if picks[m["title"]] >= 2),
+                       key=lambda m: (-picks[m["title"]], m["title"].lower()))[:most]
+    keys = {m["key"] for m in favorites}
+    return favorites + [m for m in movies if m["key"] not in keys]
+
+
+def week_summary(kid):
+    """The last 7 days for the parents' page: tablet minutes per day (and the
+    week before, to compare), and what was watched, danced to and opened most."""
+    today = datetime.date.today()
+    with side_lock:
+        usage = read_side(USAGE).get(kid, {})
+        events = read_side(HISTORY)
+    days = [today - datetime.timedelta(days=n) for n in range(6, -1, -1)]
+    since = time.mktime(days[0].timetuple())
+    recent = [e for e in events if e["kid"] == kid and e["t"] >= since]
+    top = lambda kinds: [{"title": t, "count": n} for t, n in collections.Counter(
+        e["title"] for e in recent if e["kind"] in kinds).most_common(5)]
+    return {
+        "days": [{"date": d.isoformat(), "minutes": usage.get(d.isoformat(), 0)} for d in days],
+        "total": sum(usage.get(d.isoformat(), 0) for d in days),
+        "prev_total": sum(usage.get((d - datetime.timedelta(days=7)).isoformat(), 0) for d in days),
+        "watched": top(WATCH_KINDS),
+        "apps": top(("app",)),
+        "dances": sum(1 for e in recent if e["kind"] == "dance"),
+    }
+
+
+# ---- coloring pages (the Paint app) -----------------------------------------------------
+
+def openclipart(path, timeout=30):
+    # Openclipart turns away unknown user agents.
+    return fetch(OPENCLIPART + path, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) KidsOS"},
+                 timeout=timeout, raw=True)
+
+
+def coloring_id(pid):
+    if not re.fullmatch(r"\d{1,9}", pid or ""):
+        raise ValueError("not an Openclipart picture number")
+    return pid
+
+
+def coloring_prepare(data):
+    """Openclipart's picture as a coloring page: black lines on white (nothing
+    grey, so a fill stops at the lines), lines thickened a little so fills don't
+    leak through gaps, cropped and scaled to about the size of the screen."""
+    from PIL import Image, ImageFilter, ImageOps
+    art = Image.open(io.BytesIO(data)).convert("RGBA")
+    paper = Image.new("RGBA", art.size, "white")
+    paper.alpha_composite(art)
+    page = paper.convert("L")
+    box = ImageOps.invert(page).point(lambda v: 255 if v > 60 else 0).getbbox()
+    if not box:
+        raise ValueError("that picture is blank")
+    page = page.crop(box)
+    scale = min(1500 / page.width, 1050 / page.height)
+    page = page.resize((max(1, round(page.width * scale)), max(1, round(page.height * scale))), Image.LANCZOS)
+    page = page.point(lambda v: 0 if v < 170 else 255).filter(ImageFilter.MinFilter(3))
+    framed = Image.new("L", (page.width + 80, page.height + 80), 255)
+    framed.paste(page, (40, 40))
+    out = io.BytesIO()
+    framed.convert("1").save(out, "PNG", optimize=True)
+    return out.getvalue()
+
+
+def coloring_file(pid):
+    """The page's local PNG, downloading it from Openclipart the first time."""
+    path = COLORING / f"{coloring_id(pid)}.png"
+    if not path.exists():
+        COLORING.mkdir(mode=0o700, parents=True, exist_ok=True)
+        data = coloring_prepare(openclipart(f"/image/2000px/{pid}"))
+        tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+    return path
+
+
+def coloring_search(q):
+    """Openclipart pictures for the parents to choose from (number and name)."""
+    q = (q or "").strip()[:60]
+    if not q:
+        return []
+    page = openclipart("/search/?" + urllib.parse.urlencode({"query": f"{q} coloring"})).decode(errors="replace")
+    found, seen = [], set()
+    for pid, slug in re.findall(r"/detail/(\d+)/([a-z0-9-]+)", page):
+        if pid not in seen:
+            seen.add(pid)
+            found.append({"id": pid, "title": slug.replace("-", " ").strip().capitalize()[:60]})
+    return found[:40]
+
+
+def coloring_starter():
+    """The first time: the starter pages, downloaded in the background."""
+    with lock:
+        cfg = load()
+        if "coloring" not in cfg:
+            cfg["coloring"] = [{"id": pid, "title": title} for pid, title in COLORING_STARTER]
+            save(cfg)
+        pages = [p["id"] for p in cfg["coloring"]]
+    for pid in pages:
+        try:
+            coloring_file(pid)
+        except Exception as e:  # tried again when the app asks for it
+            print(f"coloring page {pid}: {e!r}", flush=True)
+
+
 # ---- themes -------------------------------------------------------------------------
 
 def active_kid():
@@ -1343,7 +1478,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             kid_routes = {("GET", "movies"), ("GET", "poster"), ("POST", "play"), ("GET", "theme"),
                           ("POST", "theme"), ("GET", "dance"), ("GET", "dance-thumb"), ("POST", "dance-play"),
-                          ("GET", "allowed"), ("POST", "activity")}
+                          ("GET", "allowed"), ("POST", "activity"), ("GET", "coloring"),
+                          ("GET", "coloring-page")}
             if route not in kid_routes and not (client.is_loopback or parent_on_desktop()):
                 return self.reply(403, {"error": "parent_only"})
             # Whose lists: the kid on the screen; for the parent (Movies & TV setup
@@ -1373,6 +1509,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 with lock:
                     cfg = view(load())
                 return self.reply(200, poster(cfg, parts[1] if len(parts) > 1 else ""), "image/jpeg")
+            if route == ("GET", "coloring-page"):
+                # (no config lock: the first time, it's downloaded)
+                return self.reply(200, coloring_file(parts[1] if len(parts) > 1 else "").read_bytes(), "image/png")
             if route == ("GET", "allowed"):
                 with lock:
                     cfg = view(load())
@@ -1407,12 +1546,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == ("GET", "movies"):
             tv = cfg.get("tv") or {}
             until = paused_until(cfg)
-            return 200, {"movies": [{k: m.get(k) for k in ("key", "title", "year", "kind")} for m in cfg["movies"]],
+            movies = favorites_first(cfg["movies"], cfg.kid if isinstance(cfg, KidView) else None)
+            return 200, {"movies": [{k: m.get(k) for k in ("key", "title", "year", "kind")} for m in movies],
                          "tv": tv.get("location") or tv.get("name"),
                          "paused": until is not None, "pause_text": pause_text(until),
                          "cooldown": cooldown_left(), "theme": theme_of(cfg, active_kid())}
         if route == ("GET", "theme"):
             return 200, {"theme": theme_of(cfg, active_kid()), "themes": THEMES}
+        if route == ("GET", "coloring"):
+            return 200, {"pages": cfg.get("coloring", []), "theme": theme_of(cfg, active_kid())}
         if route == ("GET", "dance"):
             until = paused_until(cfg)
             return 200, {"songs": [{k: song[k] for k in ("id", "title")} for song in cfg.get("dance", [])],
@@ -1514,6 +1656,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if kid:
                 events = [e for e in events if e["kid"] == kid]
             return self.reply(200, {"events": events[-150:][::-1], "names": {k: kid_name(k) for k in kid_users()}})
+        if authed and route == ("GET", "week"):
+            kids = kid_users()
+            return self.reply(200, week_summary(kid if kid in kids else kids[0]))
+        if authed and route == ("GET", "coloring"):
+            with lock:
+                return self.reply(200, {"pages": load().get("coloring", [])})
+        if authed and route == ("GET", "coloring-search"):
+            with lock:
+                chosen = {p["id"] for p in load().get("coloring", [])}
+            found = coloring_search((query.get("q") or [""])[0])
+            return self.reply(200, {"pages": [{**p, "chosen": p["id"] in chosen} for p in found]})
+        if authed and route == ("GET", "coloring-page"):
+            return self.reply(200, coloring_file(arg or "").read_bytes(), "image/png")
+        if authed and route == ("POST", "coloring"):
+            coloring_file(arg or "")  # download it first (slow), outside the config lock
+            title = str(self.body_json().get("title") or "").strip()[:60] or "Coloring page"
+            with lock:
+                cfg = load()
+                pages = cfg.setdefault("coloring", [])
+                if not any(p["id"] == arg for p in pages):
+                    pages.append({"id": arg, "title": title})
+                    save(cfg)
+                return self.reply(200, {"count": len(pages)})
+        if authed and route == ("DELETE", "coloring"):
+            coloring_id(arg)
+            with lock:
+                cfg = load()
+                cfg["coloring"] = [p for p in cfg.get("coloring", []) if p["id"] != arg]
+                save(cfg)
+            (COLORING / f"{arg}.png").unlink(missing_ok=True)
+            return self.reply(200, {"count": len(cfg["coloring"])})
         if authed and route == ("GET", "volume"):
             return self.reply(200, {"percent": kid_volume()})
         if authed and route == ("POST", "volume"):
@@ -1651,6 +1824,7 @@ def main():
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     threading.Thread(target=seed_dance, daemon=True).start()
     threading.Thread(target=count_usage, daemon=True).start()
+    threading.Thread(target=coloring_starter, daemon=True).start()
     server = http.server.ThreadingHTTPServer(LISTEN, Handler)
     print(f"listening on {LISTEN[0]}:{LISTEN[1]}", flush=True)
     server.serve_forever()
