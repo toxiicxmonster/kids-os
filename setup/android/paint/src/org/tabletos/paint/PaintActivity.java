@@ -257,6 +257,9 @@ public class PaintActivity extends Activity {
         picker = new FrameLayout(this);
         picker.setBackgroundColor(Color.argb(170, 0, 0, 0));
         picker.setClickable(true);  // nothing underneath gets the taps
+        // Above the paper, tools and colors: raised views (elevation) draw over
+        // flat ones whatever order they were added in.
+        picker.setElevation(dp(40));
         root.addView(picker, fill());
         TextView wait = text("Getting the pages…", 36, Color.WHITE);
         wait.setGravity(Gravity.CENTER);
