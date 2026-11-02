@@ -332,7 +332,8 @@ public class HomeActivity extends Activity {
     // ---- home bubble: a way out of any app ---------------------------------------
 
     /** Apps with their own home button; the bubble would just duplicate it. */
-    private static final Set<String> HAS_OWN_HOME_BUTTON = Set.of("org.tabletos.movies", "org.tabletos.dance");
+    private static final Set<String> HAS_OWN_HOME_BUTTON = Set.of("org.tabletos.movies", "org.tabletos.dance",
+            "org.tabletos.paint");
     private View bubble;
     private String launchedPkg;
 
