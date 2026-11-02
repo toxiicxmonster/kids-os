@@ -25,14 +25,16 @@ chmod 750 "/home/$KID_USER"
 # GDM logs the kid in with timed login, both at boot and after the parent
 # switch ends the kid's session. (AutomaticLogin can't be used: it fires again
 # the moment a session ends, so the parent would never reach the password
-# prompt.) Touching the login screen restarts the countdown, giving the parent
-# time to sign in; untouched, the kid is back in Android after the delay.
+# prompt.) The 60 s delay gives the parent time to type their password on the
+# on-screen keyboard (10 s wasn't enough); the kid can tap their picture to go
+# straight back in, and untouched, they're back in Android after the delay.
+# (tablet-users-admin sync keeps TimedLoginDelay at the same value.)
 cat > /etc/gdm3/custom.conf <<EOF
 [daemon]
 AutomaticLoginEnable=false
 TimedLoginEnable=true
 TimedLogin=$KID_USER
-TimedLoginDelay=10
+TimedLoginDelay=60
 WaylandEnable=true
 
 [security]
@@ -145,7 +147,10 @@ if systemctl is-active --quiet gdm; then
     rm -f /var/lib/tablet-os/gdm-restart-pending
     systemctl restart gdm
   else
-    echo "NOTE: GDM login settings apply after the next reboot"
+    # The parent switch restarts GDM the next time the screen is free.
+    install -d /var/lib/tablet-os
+    touch /var/lib/tablet-os/gdm-restart-pending
+    echo "NOTE: GDM login settings apply the next time the login screen shows (or after a reboot)"
   fi
 fi
 

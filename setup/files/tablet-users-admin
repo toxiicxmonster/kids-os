@@ -35,6 +35,10 @@ THEMES_SVG = pathlib.Path("/usr/share/tablet-os/themes")
 BRIDGE_CONFIG = pathlib.Path("/var/lib/tablet-movies/config.json")
 GDM_CONF = pathlib.Path("/etc/gdm3/custom.conf")
 GDM_RESTART_PENDING = pathlib.Path("/var/lib/tablet-os/gdm-restart-pending")
+# Seconds the login screen waits before logging the kid back in: long enough
+# for a parent to type their password on the on-screen keyboard (10 s wasn't).
+# The kid needn't wait: a tap on their picture logs them straight in.
+TIMED_LOGIN_DELAY = 60
 ICONS = pathlib.Path("/var/lib/AccountsService/icons")
 NAME_RE = re.compile(r"[^\x00-\x1f:,=\\]{1,40}")
 
@@ -259,6 +263,10 @@ def sync():
     text = GDM_CONF.read_text() if GDM_CONF.exists() else "[daemon]\n"
     new = re.sub(r"^TimedLoginEnable=.*$", f"TimedLoginEnable={'true' if timed else 'false'}", text, flags=re.M)
     new = re.sub(r"^TimedLogin=.*$", f"TimedLogin={timed or current[0].pw_name if current else ''}", new, flags=re.M)
+    if re.search(r"^TimedLoginDelay=", new, flags=re.M):
+        new = re.sub(r"^TimedLoginDelay=.*$", f"TimedLoginDelay={TIMED_LOGIN_DELAY}", new, flags=re.M)
+    else:
+        new = re.sub(r"^(TimedLogin=.*)$", rf"\1\nTimedLoginDelay={TIMED_LOGIN_DELAY}", new, count=1, flags=re.M)
     if new != text:
         GDM_CONF.write_text(new)
         # GDM reads it at start; restarting it would end sessions, so the
