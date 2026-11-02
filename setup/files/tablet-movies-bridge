@@ -53,7 +53,9 @@ Web portal for the parents' phones (home network only, PIN-protected):
   GET  /api/portal/dance-library?q=  Danny Go! songs; POST /api/portal/dance-link {"ref"}
   GET  /api/portal/week         the last 7 days: minutes per day, top shows and apps (?kid=)
   GET  /api/portal/coloring     the coloring pages; GET coloring-search?q= (Openclipart),
-                                POST/DELETE /api/portal/coloring/<id> ({"title"}) add/remove
+                                POST/DELETE /api/portal/coloring/<id> ({"title"}) add/remove,
+                                POST coloring-url {"url", "title"}, POST coloring-upload?title=
+                                (the picture file as the body)
 """
 import collections.abc
 import copy
@@ -1315,9 +1317,80 @@ def openclipart(path, timeout=30):
 
 
 def coloring_id(pid):
-    if not re.fullmatch(r"\d{1,9}", pid or ""):
-        raise ValueError("not an Openclipart picture number")
+    """An Openclipart picture number, or "u" + 12 hex digits for a page the
+    parents added from a link or a file."""
+    if not re.fullmatch(r"\d{1,9}|u[0-9a-f]{12}", pid or ""):
+        raise ValueError("not a coloring page")
     return pid
+
+
+COLORING_MAX_BYTES = 20_000_000
+
+
+def coloring_image(data):
+    """Raster image bytes from what the parents gave: PNG/JPEG/GIF/WebP as is,
+    SVG drawn by rsvg-convert."""
+    head = data[:2048].lstrip().lower()
+    if head.startswith(b"<?xml") or b"<svg" in head:
+        out = subprocess.run(["rsvg-convert", "-w", "2000", "--keep-aspect-ratio"], input=data,
+                             capture_output=True, timeout=60)
+        if out.returncode or not out.stdout:
+            raise ValueError("couldn't read that SVG drawing")
+        return out.stdout
+    return data
+
+
+def coloring_add_own(data, title):
+    """Make a page from an image the parents supplied (a link or a file),
+    keep it, and put it on the list."""
+    if not data:
+        raise ValueError("that file is empty")
+    if len(data) > COLORING_MAX_BYTES:
+        raise ValueError("pictures up to 20 MB, please")
+    try:
+        page = coloring_prepare(coloring_image(data))
+    except (OSError, SyntaxError) as e:  # PIL: not an image it knows
+        raise ValueError("that isn't a picture (PNG, JPG, GIF, WebP or SVG)") from e
+    pid = "u" + hashlib.sha256(page).hexdigest()[:12]
+    COLORING.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = COLORING / f"{pid}.png"
+    tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
+    tmp.write_bytes(page)
+    tmp.replace(path)
+    title = (title or "").strip()[:60] or "My page"
+    with lock:
+        cfg = load()
+        pages = cfg.setdefault("coloring", [])
+        if not any(p["id"] == pid for p in pages):
+            pages.append({"id": pid, "title": title})
+            save(cfg)
+        return {"id": pid, "count": len(pages)}
+
+
+def coloring_from_url(url, title):
+    """A page from a link: an Openclipart page (by its number) or any picture's address."""
+    url = (url or "").strip()
+    m = re.search(r"openclipart\.org/(?:detail|image/\d+px|download)/(\d+)", url)
+    if m:
+        coloring_file(m[1])
+        with lock:
+            cfg = load()
+            pages = cfg.setdefault("coloring", [])
+            if not any(p["id"] == m[1] for p in pages):
+                slug = re.search(r"/detail/\d+/([a-z0-9-]+)", url)
+                pages.append({"id": m[1], "title": (title or "").strip()[:60]
+                              or (slug[1].replace("-", " ").capitalize()[:60] if slug else "Coloring page")})
+                save(cfg)
+            return {"id": m[1], "count": len(pages)}
+    if not re.match(r"https?://", url, re.I):
+        raise ValueError("paste a link that starts with http:// or https://")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) KidsOS"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = r.read(COLORING_MAX_BYTES + 1)
+    if not title:
+        title = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit("/", 1)[-1]).rsplit(".", 1)[0]
+        title = re.sub(r"[-_]+", " ", title).strip().capitalize()
+    return coloring_add_own(data, title)
 
 
 def coloring_prepare(data):
@@ -1347,6 +1420,8 @@ def coloring_file(pid):
     """The page's local PNG, downloading it from Openclipart the first time."""
     path = COLORING / f"{coloring_id(pid)}.png"
     if not path.exists():
+        if pid.startswith("u"):
+            raise KeyError(pid)  # the parents' own page, and its file is gone
         COLORING.mkdir(mode=0o700, parents=True, exist_ok=True)
         data = coloring_prepare(openclipart(f"/image/2000px/{pid}"))
         tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
@@ -1669,6 +1744,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(200, {"pages": [{**p, "chosen": p["id"] in chosen} for p in found]})
         if authed and route == ("GET", "coloring-page"):
             return self.reply(200, coloring_file(arg or "").read_bytes(), "image/png")
+        if authed and route == ("POST", "coloring-url"):
+            body = self.body_json()
+            try:
+                return self.reply(200, coloring_from_url(body.get("url"), body.get("title")))
+            except urllib.error.URLError as e:
+                raise ValueError(f"couldn't get that link ({getattr(e, 'reason', e)})") from e
+        if authed and route == ("POST", "coloring-upload"):
+            # The picture file itself is the request body (not JSON).
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= COLORING_MAX_BYTES:
+                raise ValueError("pictures up to 20 MB, please")
+            data = self.rfile.read(length)
+            title = (query.get("title") or [""])[0]
+            return self.reply(200, coloring_add_own(data, title))
         if authed and route == ("POST", "coloring"):
             coloring_file(arg or "")  # download it first (slow), outside the config lock
             title = str(self.body_json().get("title") or "").strip()[:60] or "Coloring page"

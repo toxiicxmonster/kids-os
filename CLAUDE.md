@@ -51,7 +51,10 @@ gitignored.)
   (`/image/2000px/<id>`), makes it pure black lines on white (threshold 170,
   lines thickened so fills don't leak) and keeps it in
   `/var/lib/tablet-movies/coloring/`. A starter set is added on first run;
-  parents add/remove pages on the web page's Coloring tab (shared by all kids).
+  parents add/remove pages on the web page's Coloring tab (shared by all kids):
+  Openclipart search, a link (Openclipart page or any picture), or a file
+  upload (PNG/JPG/GIF/WebP; SVG via rsvg-convert). Their own pages get ids
+  `u<12 hex>` (a hash of the page) and are never re-downloaded.
 - **Carousel order**: the app opened most recently first (Tablet Home prefs
   `used_<package>`, so per kid). `BUILT_IN` packages (ours, plus Khan Academy
   Kids) are switched on once when first seen.

@@ -229,6 +229,20 @@
         free, public-domain drawings. Simple pictures with big shapes work best for little fingers.
         Tap one to add it.</p>
     </section>
+
+    <section class="card">
+      <h2>Add your own page</h2>
+      <div class="search">
+        <input id="cUrl" placeholder="Link to a picture (or an Openclipart page)" inputmode="url">
+        <button class="primary" id="cUrlBtn">Add</button>
+      </div>
+      <div class="search">
+        <input id="cFile" type="file" accept="image/*,.svg" multiple>
+      </div>
+      <p class="msg" id="cOwnMsg">A link to a coloring page picture, or picture files from this phone or
+        computer (PNG, JPG, GIF, WebP or SVG, up to 20 MB). It's turned into black lines on white and kept
+        on the tablet. Only add pictures you're allowed to use.</p>
+    </section>
     </div>
 
     <section class="card">
@@ -468,6 +482,38 @@ async function colorSearch() {
     box.replaceChildren(p);
   }
 }
+$("cUrlBtn").onclick = async () => {
+  const url = $("cUrl").value.trim();
+  if (!url) return;
+  $("cUrlBtn").disabled = true; $("cOwnMsg").textContent = "Getting the picture…";
+  try {
+    await api("POST", "coloring-url", {url});
+    $("cUrl").value = ""; $("cOwnMsg").textContent = "Added ✓";
+    refreshColoring().catch(() => {});
+  } catch (e) { if (e.message !== "locked") $("cOwnMsg").textContent = e.message; }
+  $("cUrlBtn").disabled = false;
+};
+$("cFile").onchange = async () => {
+  const files = [...$("cFile").files];
+  let added = 0;
+  for (const f of files) {
+    $("cOwnMsg").textContent = "Adding " + f.name + "…";
+    const title = f.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim();
+    try {
+      const res = await fetch("/api/portal/coloring-upload?title=" + encodeURIComponent(title), {
+        method: "POST", credentials: "same-origin", body: f,
+        headers: {"Content-Type": f.type || "application/octet-stream"},
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) { showLogin(); return; }
+      if (!res.ok) throw new Error(f.name + ": " + (data.error || "couldn't add it"));
+      added++;
+    } catch (e) { $("cOwnMsg").textContent = e.message; $("cFile").value = ""; refreshColoring().catch(() => {}); return; }
+  }
+  $("cOwnMsg").textContent = "Added " + added + (added === 1 ? " page ✓" : " pages ✓");
+  $("cFile").value = "";
+  refreshColoring().catch(() => {});
+};
 $("cSearchBtn").onclick = colorSearch;
 $("cq").onkeydown = (e) => { if (e.key === "Enter") colorSearch(); };
 
