@@ -46,15 +46,19 @@ gitignored.)
   usage and history live in their own files (config writes re-trigger the
   login-screen sync).
 - **Paint** (`android/paint`): fill/brush on coloring pages or blank paper,
-  undo (wipe included), each page's painting saved in the kid's Android. Pages
-  are Openclipart (public domain): the bridge downloads each once
-  (`/image/2000px/<id>`), makes it pure black lines on white (threshold 170,
-  lines thickened so fills don't leak) and keeps it in
-  `/var/lib/tablet-movies/coloring/`. A starter set is added on first run;
-  parents add/remove pages on the web page's Coloring tab (shared by all kids):
-  Openclipart search, a link (Openclipart page or any picture), or a file
-  upload (PNG/JPG/GIF/WebP; SVG via rsvg-convert). Their own pages get ids
-  `u<12 hex>` (a hash of the page) and are never re-downloaded.
+  undo (wipe included), each page's painting saved in the kid's Android. The
+  bridge downloads each page once, makes it pure black lines on white
+  (threshold 170, lines thickened so fills don't leak) and keeps it in
+  `/var/lib/tablet-movies/coloring/`. Sources: **Crayola's free coloring pages**
+  (personal use, so downloaded to the box only, never committed or shown in
+  the README; page names from their sitemap, cached a week; the picture is the
+  one `coloring-page-images/` image on the print page), ids `c-<name>`;
+  Openclipart (public domain) ids are numbers; the parents' own pages (a link
+  or a file upload, SVG via rsvg-convert) are `u<12 hex>`. A Crayola starter
+  set is added on first run (`coloring_starter`: 2 replaced the first
+  Openclipart set). Parents manage the shared list on the web page's Coloring
+  tab. publicdomainpictures.net search is behind a Cloudflare challenge, but
+  its picture links work through "Add your own page".
 - **Carousel order**: the app opened most recently first (Tablet Home prefs
   `used_<package>`, so per kid). `BUILT_IN` packages (ours, plus Khan Academy
   Kids) are switched on once when first seen.

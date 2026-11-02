@@ -221,19 +221,19 @@
     <section class="card">
       <h2>Add coloring pages</h2>
       <div class="search">
-        <input id="cq" placeholder="Try: dog, truck, dinosaur, princess" enterkeyhint="search">
+        <input id="cq" placeholder="Try: cat, truck, dinosaur, unicorn" enterkeyhint="search">
         <button class="primary" id="cSearchBtn">Search</button>
       </div>
       <div id="cResults" class="pages"></div>
-      <p class="msg">From <a href="https://openclipart.org" target="_blank" rel="noopener">Openclipart</a>:
-        free, public-domain drawings. Simple pictures with big shapes work best for little fingers.
-        Tap one to add it.</p>
+      <p class="msg">From <a href="https://www.crayola.com/free-coloring-pages" target="_blank" rel="noopener">Crayola's
+        free coloring pages</a> (free for personal use; they're downloaded to the tablet only). Simple pictures
+        with big shapes work best for little fingers. Tap one to add it.</p>
     </section>
 
     <section class="card">
       <h2>Add your own page</h2>
       <div class="search">
-        <input id="cUrl" placeholder="Link to a picture (or an Openclipart page)" inputmode="url">
+        <input id="cUrl" placeholder="Link to a picture, or a Crayola or Openclipart page" inputmode="url">
         <button class="primary" id="cUrlBtn">Add</button>
       </div>
       <div class="search">
@@ -466,7 +466,7 @@ async function colorSearch() {
   try {
     const r = await api("GET", "coloring-search?q=" + encodeURIComponent(q));
     if (!r.pages.length) { box.innerHTML = "<p class='msg'>Nothing found. Try a simpler word.</p>"; return; }
-    box.replaceChildren(...r.pages.map((p) => pageTile(p, "https://openclipart.org/image/400px/" + p.id, async (tile) => {
+    box.replaceChildren(...r.pages.map((p) => pageTile(p, "/api/portal/coloring-thumb/" + encodeURIComponent(p.id), async (tile) => {
       if (tile.classList.contains("chosen") || tile.dataset.busy) return;
       tile.dataset.busy = 1; tile.style.opacity = .5;
       try {

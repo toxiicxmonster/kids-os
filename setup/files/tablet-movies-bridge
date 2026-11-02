@@ -92,15 +92,19 @@ STATE = pathlib.Path(os.environ.get("TABLET_MOVIES_STATE", "/var/lib/tablet-movi
 CONFIG = STATE / "config.json"
 POSTERS = STATE / "posters"
 COLORING = STATE / "coloring"  # coloring pages, downloaded once and kept here (PNG, black lines on white)
-# Pages every tablet starts with: simple, big-shape line art from Openclipart
-# (all public domain), picked for a 3-year-old.
+# Pages every tablet starts with: simple, big-shape pages from Crayola's free
+# coloring pages, picked for a 3-year-old (downloaded to the box, never shipped).
 COLORING_STARTER = [
-    ("312543", "Kitty"), ("87061", "Puppy"), ("352670", "Butterfly"), ("74749", "Lion"),
-    ("164587", "Fire truck"), ("272531", "Rocket"), ("8546", "Apple"), ("352672", "Flower"),
-    ("75271", "Owl"), ("74233", "Turtle"), ("213606", "Bunny"), ("75889", "Duck"),
-    ("190559", "Frog"), ("228075", "Airplane"), ("180898", "Sun"), ("1384", "Dinosaur"),
-    ("333629", "Eel"), ("177816", "Elephant"),
+    ("c-cute-cat", "Cat"), ("c-easter-bunny", "Bunny"), ("c-birthday-dinosaur", "Dinosaur"),
+    ("c-turtle-mommy", "Turtles"), ("c-fire-truck", "Fire truck"), ("c-race-car", "Race car"),
+    ("c-nocturnal-owl", "Owls"), ("c-crayola-unicorn", "Unicorn"), ("c-uni-creatures-unicorn", "Unicorn friends"),
+    ("c-daddy-bear", "Bears"), ("c-african-elephant", "Elephant"), ("c-rocket-space-adventure", "Rocket"),
+    ("c-fish-taco", "Fish"), ("c-cute-cow", "Cow"),
 ]
+# The first starter set (Openclipart), replaced by the one above.
+COLORING_STARTER_V1 = ("312543", "87061", "352670", "74749", "164587", "272531", "8546", "352672",
+                       "75271", "74233", "213606", "75889", "190559", "228075", "180898", "1384",
+                       "333629", "177816")
 OPENCLIPART = "https://openclipart.org"
 PARENT_USER = os.environ.get("PARENT_USER", "parent")
 LISTEN = ("0.0.0.0", int(os.environ.get("TABLET_MOVIES_PORT", "8766")))
@@ -1317,11 +1321,75 @@ def openclipart(path, timeout=30):
 
 
 def coloring_id(pid):
-    """An Openclipart picture number, or "u" + 12 hex digits for a page the
-    parents added from a link or a file."""
-    if not re.fullmatch(r"\d{1,9}|u[0-9a-f]{12}", pid or ""):
+    """An Openclipart picture number, "c-" + a Crayola page's name, or "u" + 12
+    hex digits for a page the parents added from a link or a file."""
+    if not re.fullmatch(r"\d{1,9}|u[0-9a-f]{12}|c-[a-z0-9][a-z0-9.-]{1,150}", pid or ""):
         raise ValueError("not a coloring page")
     return pid
+
+
+# ---- Crayola's free coloring pages (personal use: downloaded to this box only) ----------
+
+CRAYOLA = "https://www.crayola.com"
+CRAYOLA_INDEX = STATE / "crayola-index.json"  # the page names from Crayola's sitemap
+CRAYOLA_SKIP = ("adult", "mandala", "foldable", "-card-", "gift-card", "tracing", "worksheet",
+                "color-by-number", "word-search", "maze", "certificate", "bookmark")
+crayola_lock = threading.Lock()
+
+
+def crayola(path, timeout=30):
+    return fetch(CRAYOLA + path, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) KidsOS"},
+                 timeout=timeout, raw=True)
+
+
+def crayola_index():
+    """Every free coloring page's name (e.g. "cute-cat"), from Crayola's sitemap,
+    kept for a week."""
+    with crayola_lock:
+        try:
+            cached = json.loads(CRAYOLA_INDEX.read_text())
+            if time.time() - cached["at"] < 7 * 86400 and cached["pages"]:
+                return cached["pages"]
+        except (FileNotFoundError, ValueError, KeyError):
+            cached = None
+        try:
+            sitemap = crayola("/sitemap/sitemap.xml", timeout=60).decode(errors="replace")
+        except OSError:
+            if cached:
+                return cached["pages"]  # a stale list beats none
+            raise
+        pages = sorted(set(re.findall(
+            r"/free-coloring-pages/print/([a-z0-9][a-z0-9.-]+?)-coloring-page</loc>", sitemap)))
+        STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+        CRAYOLA_INDEX.write_text(json.dumps({"at": time.time(), "pages": pages}))
+        return pages
+
+
+def crayola_title(name):
+    return name.replace(".", "").replace("-", " ").strip().capitalize()[:60]
+
+
+def crayola_image(name):
+    """The picture on a Crayola page (its print page shows exactly one coloring page image)."""
+    page = crayola(f"/free-coloring-pages/print/{name}-coloring-page").decode(errors="replace")
+    for src in re.findall(r'src="(/images/default-source/coloring-page-images/[^"?]+\.(?:png|jpe?g))', page):
+        if not re.search(r"/(navigation-icons|buttons)/|banner|logo", src):
+            return crayola(src, timeout=60)
+    raise KeyError(f"no picture on Crayola's {name} page")
+
+
+def crayola_search(q):
+    """Crayola pages whose names have all the words searched for; simple
+    (short) names first, and none of the grown-up or printable-craft ones."""
+    words = re.findall(r"[a-z0-9]+", (q or "").lower())
+    if not words:
+        return []
+    def has(name, w):  # a whole word of the name, or its plural ("car" isn't "carter")
+        return any(part in (w, w + "s", w + "es") or w in (part + "s", part + "es") for part in name.split("-"))
+    found = [n for n in crayola_index()
+             if all(has(n, w) for w in words) and not any(k in f"-{n}-" for k in CRAYOLA_SKIP)]
+    found.sort(key=lambda n: (len(n), n))
+    return [{"id": f"c-{n}", "title": crayola_title(n)} for n in found[:48]]
 
 
 COLORING_MAX_BYTES = 20_000_000
@@ -1370,6 +1438,18 @@ def coloring_add_own(data, title):
 def coloring_from_url(url, title):
     """A page from a link: an Openclipart page (by its number) or any picture's address."""
     url = (url or "").strip()
+    c = re.search(r"crayola\.com/(?:[a-z]{2}-[a-z]{2}/)?free-coloring-pages/print/"
+                  r"([a-z0-9][a-z0-9.-]+?)-coloring-page", url)
+    if c:
+        pid = f"c-{c[1]}"
+        coloring_file(pid)
+        with lock:
+            cfg = load()
+            pages = cfg.setdefault("coloring", [])
+            if not any(p["id"] == pid for p in pages):
+                pages.append({"id": pid, "title": (title or "").strip()[:60] or crayola_title(c[1])})
+                save(cfg)
+            return {"id": pid, "count": len(pages)}
     m = re.search(r"openclipart\.org/(?:detail|image/\d+px|download)/(\d+)", url)
     if m:
         coloring_file(m[1])
@@ -1394,7 +1474,7 @@ def coloring_from_url(url, title):
 
 
 def coloring_prepare(data):
-    """Openclipart's picture as a coloring page: black lines on white (nothing
+    """A picture as a coloring page: black lines on white (nothing
     grey, so a fill stops at the lines), lines thickened a little so fills don't
     leak through gaps, cropped and scaled to about the size of the screen."""
     from PIL import Image, ImageFilter, ImageOps
@@ -1417,13 +1497,14 @@ def coloring_prepare(data):
 
 
 def coloring_file(pid):
-    """The page's local PNG, downloading it from Openclipart the first time."""
+    """The page's local PNG, downloading it (Crayola or Openclipart) the first time."""
     path = COLORING / f"{coloring_id(pid)}.png"
     if not path.exists():
         if pid.startswith("u"):
             raise KeyError(pid)  # the parents' own page, and its file is gone
         COLORING.mkdir(mode=0o700, parents=True, exist_ok=True)
-        data = coloring_prepare(openclipart(f"/image/2000px/{pid}"))
+        art = crayola_image(pid[2:]) if pid.startswith("c-") else openclipart(f"/image/2000px/{pid}")
+        data = coloring_prepare(art)
         tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
         tmp.write_bytes(data)
         tmp.replace(path)
@@ -1431,17 +1512,35 @@ def coloring_file(pid):
 
 
 def coloring_search(q):
-    """Openclipart pictures for the parents to choose from (number and name)."""
-    q = (q or "").strip()[:60]
-    if not q:
-        return []
-    page = openclipart("/search/?" + urllib.parse.urlencode({"query": f"{q} coloring"})).decode(errors="replace")
-    found, seen = [], set()
-    for pid, slug in re.findall(r"/detail/(\d+)/([a-z0-9-]+)", page):
-        if pid not in seen:
-            seen.add(pid)
-            found.append({"id": pid, "title": slug.replace("-", " ").strip().capitalize()[:60]})
-    return found[:40]
+    """Pages for the parents to choose from: Crayola's free coloring pages."""
+    return crayola_search((q or "").strip()[:60])
+
+
+def coloring_thumb(pid):
+    """A small picture of a page for the parents' search results (kept, so a
+    second look is quick); pages already on the list use their own file."""
+    path = COLORING / f"{coloring_id(pid)}.png"
+    if path.exists():
+        return path.read_bytes(), "image/png"
+    if pid.startswith("u"):
+        raise KeyError(pid)
+    thumbs = STATE / "coloring-thumbs"
+    thumb = thumbs / f"{pid}.jpg"
+    if not thumb.exists():
+        from PIL import Image
+        art = Image.open(io.BytesIO(crayola_image(pid[2:]) if pid.startswith("c-")
+                                    else openclipart(f"/image/400px/{pid}"))).convert("RGBA")
+        paper = Image.new("RGBA", art.size, "white")
+        paper.alpha_composite(art)
+        paper = paper.convert("RGB")
+        paper.thumbnail((300, 300))
+        thumbs.mkdir(mode=0o700, parents=True, exist_ok=True)
+        out = io.BytesIO()
+        paper.save(out, "JPEG", quality=80)
+        tmp = thumb.with_suffix(f".{threading.get_ident()}.tmp")
+        tmp.write_bytes(out.getvalue())
+        tmp.replace(thumb)
+    return thumb.read_bytes(), "image/jpeg"
 
 
 def coloring_starter():
@@ -1450,7 +1549,18 @@ def coloring_starter():
         cfg = load()
         if "coloring" not in cfg:
             cfg["coloring"] = [{"id": pid, "title": title} for pid, title in COLORING_STARTER]
+            cfg["coloring_starter"] = 2
             save(cfg)
+        elif cfg.get("coloring_starter", 1) < 2:
+            # The first starter set (Openclipart) gives way to the Crayola one;
+            # pages the parents added themselves stay, after the new ones.
+            old = set(COLORING_STARTER_V1)
+            own = [p for p in cfg["coloring"] if p["id"] not in old]
+            cfg["coloring"] = [{"id": pid, "title": title} for pid, title in COLORING_STARTER] + own
+            cfg["coloring_starter"] = 2
+            save(cfg)
+            for pid in old:
+                (COLORING / f"{pid}.png").unlink(missing_ok=True)
         pages = [p["id"] for p in cfg["coloring"]]
     for pid in pages:
         try:
@@ -1742,6 +1852,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 chosen = {p["id"] for p in load().get("coloring", [])}
             found = coloring_search((query.get("q") or [""])[0])
             return self.reply(200, {"pages": [{**p, "chosen": p["id"] in chosen} for p in found]})
+        if authed and route == ("GET", "coloring-thumb"):
+            return self.reply(200, *coloring_thumb(arg or ""))
         if authed and route == ("GET", "coloring-page"):
             return self.reply(200, coloring_file(arg or "").read_bytes(), "image/png")
         if authed and route == ("POST", "coloring-url"):
