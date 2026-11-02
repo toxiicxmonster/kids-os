@@ -317,7 +317,9 @@ async function refresh() {
   if (!volumeLoaded) {
     volumeLoaded = true;
     loadVolume();
-    loadKids().then(() => { loadSchedule().catch(() => {}); loadHistory().catch(() => {}); }).catch(() => {});
+    loadKids().then(() => {
+      loadSchedule().catch(() => {}); loadHistory().catch(() => {}); loadWeek().catch(() => {});
+    }).catch(() => {});
     loadSystem().catch(() => {});
   }
   loadNow().catch(() => {});
