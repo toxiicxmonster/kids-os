@@ -16,7 +16,9 @@ Kid endpoints (anyone on the Waydroid network):
   POST /api/play/<key>          play from the beginning on the TV, if it's on
   POST /api/play-local/<key>    watch on the tablet instead (only while the TV is paused or
                                 no TV is set up; "local" in /api/movies): picks a show's
-                                episode, resets progress, returns the Plex key to open
+                                episode and returns a stream for Movies & TV's own player
+  GET  /api/hls/<session>/...   that stream (HLS from the Plex transcoder, through the bridge);
+                                POST /api/hls-stop/<session> when the player closes
   POST /api/dance-local/<id>    the same for a Dance song (the app opens YouTube Kids)
   GET  /api/theme               the logged-in kid's theme; POST /api/theme/<name> sets it
   GET  /api/dance               the Dance app's songs; GET /api/dance-thumb/<id> a picture
@@ -287,9 +289,10 @@ def tablet_mode(cfg):
 
 
 def play_local(cfg, key=None, song=None):
-    """A pick to watch on the tablet: checks it's allowed and on the kid's list,
-    picks a show's episode and clears the saved spot (always from the start),
-    then tells the app what to open. Nothing goes to the TV."""
+    """A pick to watch on the tablet: checks it's allowed and on the kid's list.
+    A Plex title gets a stream for Movies & TV's own player (a show: one of
+    its episodes, at random); a Dance song is opened in YouTube Kids by the
+    app. Nothing goes to the TV."""
     kid = cfg.kid if isinstance(cfg, KidView) else None
     if kid and not kid_allowed(cfg.root, kid)[0]:
         return {"result": "sleeping", "message": "The tablet is sleeping."}
@@ -304,16 +307,100 @@ def play_local(cfg, key=None, song=None):
         item = next((m for m in cfg.get("movies", []) if m["key"] == key), None)
         if not item:
             return {"result": "error", "message": "That isn't on the list."}
-        if item.get("kind") not in PLEX_TYPES:
+        kind = item.get("kind") or "movie"  # entries from before shows have no kind
+        if kind not in PLEX_TYPES:
             return {"result": "tv_only", "message": "That one only plays on the TV."}
-        play_key = pick_episode(cfg, key) if item["kind"] == "show" else key
-        reset_progress(cfg, play_key)
-        title, kind = item["title"], item["kind"]
-        out = {"key": play_key, "server": cfg.get("server_id"),
-               "type": "episode" if item["kind"] == "show" else "movie"}
+        play_key = pick_episode(cfg, key) if kind == "show" else key
+        title = item["title"]
+        out = {"stream": f"hls/{stream_start(play_key)}/start.m3u8", "title": title, "kind": kind}
     if kid:
         add_history(kid, kind, title)
     return {"result": "ok", **out}
+
+
+# ---- Movies & TV's own player: Plex streams through the bridge ---------------------
+#
+# The tablet never talks to Plex itself (no Plex sign-in in the kid's Android):
+# the app plays http://192.168.240.1:8766/api/hls/<session>/start.m3u8, and the
+# bridge passes each request on to the server's transcoder, as the kid's
+# profile. Plex's playlists use relative links, so the app's player asks the
+# bridge for the rest (/api/hls/<session>/session/<id>/base/index.m3u8,
+# .../00000.ts) and those go through the same way. Always from the start
+# (offset 0), sized for the tablet's screen.
+
+STREAM_MAX_BITRATE = 3000  # kbps: plenty for 1024x768, light on the server
+streams = {}  # session id -> {"key", "at"}
+
+
+def stream_start(key):
+    sid = uuid.uuid4().hex
+    now = time.time()
+    for old in [s for s, v in streams.items() if now - v["at"] > 6 * 3600]:
+        streams.pop(old, None)
+    streams[sid] = {"key": str(int(key)), "at": now}
+    return sid
+
+
+def stream_get(cfg, sid, rest):
+    """(body, content type) of one HLS request, passed on to the Plex transcoder."""
+    stream = streams.get(sid)
+    if not stream or ".." in rest or not re.fullmatch(r"[A-Za-z0-9_./-]+", rest):
+        raise KeyError(sid)
+    base = f"{cfg['server_url']}/video/:/transcode/universal/"
+    # Just the token (the bridge's usual JSON Accept header gets a 400 from the transcoder).
+    headers = {"X-Plex-Token": cfg["server_token"]}
+    if rest == "start.m3u8":
+        w, h = (tablet_screen() or (1024, 768))
+        q = {"path": f"/library/metadata/{stream['key']}", "mediaIndex": 0, "partIndex": 0, "protocol": "hls",
+             "offset": 0, "fastSeek": 1, "directPlay": 0, "directStream": 1, "directStreamAudio": 0,
+             "subtitleSize": 100, "audioBoost": 100, "location": "lan", "session": sid, "copyts": 1,
+             "videoResolution": f"{w}x{h}", "maxVideoBitrate": STREAM_MAX_BITRATE,
+             "X-Plex-Client-Profile-Extra": "add-transcode-target(type=videoProfile&context=streaming"
+                                            "&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac)",
+             # The transcoder wants who's asking in the query, not only in headers.
+             "X-Plex-Session-Identifier": sid, "X-Plex-Client-Identifier": cfg["client_id"],
+             "X-Plex-Product": "Plex Web", "X-Plex-Platform": "Chrome", "X-Plex-Device": "Android",
+             "X-Plex-Token": cfg["server_token"]}
+        qs = urllib.parse.urlencode(q)
+        # The server only starts a stream it has first been asked to decide on
+        # (without this, start.m3u8 is a bare 400).
+        fetch(base + "decision?" + qs, headers={"Accept": "application/json"}, timeout=30)
+        url = base + "start.m3u8?" + qs
+    else:
+        url = base + rest
+    data = fetch(url, headers=headers, timeout=60, raw=True)
+    stream["at"] = time.time()
+    if rest.endswith(".m3u8"):
+        # Keep every link relative to the bridge (and the token off the tablet).
+        data = re.sub(rb"https?://[^\s\"]*?/video/:/transcode/universal/", b"", data)
+        data = re.sub(rb"([?&])X-Plex-Token=[^&\s\"]*", rb"\1", data)
+        return data, "application/vnd.apple.mpegurl"
+    return data, "video/mp2t"
+
+
+def stream_stop(cfg, sid):
+    if streams.pop(sid, None) is not None:
+        try:
+            fetch(f"{cfg['server_url']}/video/:/transcode/universal/stop?session={sid}",
+                  headers=plex_headers(cfg, cfg["server_token"]), timeout=10)
+        except OSError:
+            pass
+
+
+def tablet_screen():
+    """The kid's screen size, from tablet-screen-size (cached); None if unknown."""
+    global screen_size
+    if screen_size is None:
+        try:
+            out = subprocess.run(["/usr/local/bin/tablet-screen-size"], capture_output=True, text=True, timeout=5)
+            w, h = re.search(r"(\d+)x(\d+)", out.stdout).groups()
+            screen_size = (int(w), int(h))
+        except (OSError, AttributeError, subprocess.SubprocessError):
+            screen_size = ()
+    return screen_size or None
+
+
+screen_size = None
 
 
 def add_item(cfg, key):
@@ -1736,7 +1823,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             kid_routes = {("GET", "movies"), ("GET", "poster"), ("POST", "play"), ("GET", "theme"),
                           ("POST", "theme"), ("GET", "dance"), ("GET", "dance-thumb"), ("POST", "dance-play"),
                           ("GET", "allowed"), ("POST", "activity"), ("GET", "coloring"),
-                          ("GET", "coloring-page"), ("POST", "play-local"), ("POST", "dance-local")}
+                          ("GET", "coloring-page"), ("POST", "play-local"), ("POST", "dance-local"),
+                          ("GET", "hls"), ("POST", "hls-stop")}
             if route not in kid_routes and not (client.is_loopback or parent_on_desktop()):
                 return self.reply(403, {"error": "parent_only"})
             # Whose lists: the kid on the screen; for the parent (Movies & TV setup
@@ -1774,6 +1862,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     cfg["tv"] = chosen
                     save(cfg)
                 return self.reply(200, {"tv": {k: v for k, v in chosen.items() if k != "client_key"}})
+            if route in (("GET", "hls"), ("POST", "hls-stop")):
+                # The player's stream (slow Plex round trips: outside the config lock).
+                with lock:
+                    cfg = load()
+                sid = parts[1] if len(parts) > 1 else ""
+                if route[1] == "hls-stop":
+                    stream_stop(cfg, sid)
+                    return self.reply(200, {"ok": True})
+                return self.reply(200, *stream_get(cfg, sid, "/".join(parts[2:])))
             if route in (("POST", "play-local"), ("POST", "dance-local")):
                 # Plex round trips (episode, progress), so outside the config lock.
                 with lock:

@@ -46,20 +46,25 @@ gitignored.)
   usage and history live in their own files (config writes re-trigger the
   login-screen sync).
 - **Watching on the tablet**: while movie time is paused or no TV is set up
-  (`tablet_mode`, `"local"` in `/api/movies` and `/api/dance`), Movies & TV
-  hands Plex titles to the kid's own Plex app (`com.plexapp.android`) and Dance
-  hands songs to YouTube Kids (one song, no party), if those are installed in
-  that kid's Android. `POST /api/play-local/<key>` / `dance-local/<id>` check
-  tablet time and the list, pick a show's episode and reset progress; the app
-  then tries Plex's `plex://play/?metadataKey=…` link, then the app.plex.tv
-  details link, then just opens the app. Netflix titles are dimmed (TV only).
-  Tablet Home puts both players on the lock-task allowlist
-  (`PlayerCover.PLAYERS`) without adding them to the carousel; the apps'
-  manifests `<queries>` them. After the hand-off the app broadcasts to Tablet
-  Home's `PlayerCover`: a themed "Here it comes!" overlay swallows every tap
-  until media sound has run 1.5 s (so no wandering into Plex profiles), with
-  the floating home button (`HomeBubble`) on top for as long as the player is
-  open; after 90 s with no sound it says to tap home.
+  (`tablet_mode`, `"local"` in `/api/movies` and `/api/dance`), picks play on
+  the tablet. `POST /api/play-local/<key>` / `dance-local/<id>` check tablet
+  time and the list. Netflix titles are dimmed (TV only).
+  - **Plex** plays in Movies & TV's own `PlayerActivity` (themed "Here it
+    comes!" until the first frame, big 🏠 and ⏸/▶, no seek bar; back to the
+    posters at the end). The bridge streams it: `/api/hls/<session>/…` passes
+    each HLS request to the server's universal transcoder as the kid's profile
+    (offset 0, screen-sized, ≤3 Mbps h264/aac), so no Plex token reaches
+    Android. The transcoder answers `start.m3u8` with a bare 400 unless
+    `decision` was asked first with the same query. The Plex Android app
+    can't be used: none of its links start a title (tested on the Dell).
+  - **Dance** hands the song to YouTube Kids (one song, no party):
+    `https://kids.youtube.com/watch?v=<id>` starts it at once (youtube.com
+    links don't resolve there). Tablet Home puts YouTube Kids (and Plex) on
+    the lock-task allowlist (`PlayerCover.PLAYERS`) without adding them to the
+    carousel; after the hand-off Dance broadcasts to Tablet Home's
+    `PlayerCover`: a themed overlay swallows every tap until media sound has
+    run 1.5 s, with the floating home button (`HomeBubble`) on top while the
+    player is open; after 90 s with no sound it says to tap home.
 - **Paint** (`android/paint`): fill/brush on coloring pages or blank paper,
   undo (wipe included), each page's painting saved in the kid's Android. The
   bridge downloads each page once, makes it pure black lines on white

@@ -56,16 +56,15 @@ import java.util.concurrent.Executors;
  * Everything goes through the tablet-movies-bridge service on the Linux host,
  * which holds the Plex sign-in and talks to the TV.
  *
- * While the TV is paused (web page) or no TV is set up, and the Plex app is
- * installed in this kid's Android, Plex titles open in that app on the tablet
- * instead ("local" from the bridge). Netflix titles stay TV-only.
+ * While the TV is paused (web page) or no TV is set up ("local" from the
+ * bridge), Plex titles play right here instead, in PlayerActivity, streamed
+ * from the Plex server through the bridge. Netflix titles stay TV-only.
  */
 public class MoviesActivity extends Activity {
     private static final String TAG = "TabletMovies";
     private static final String BRIDGE = "http://192.168.240.1:8766/api";
     private static final String MODE_PROP = "persist.waydroid.tablet_mode";
     private static final int NAVY = Color.rgb(0x0d, 0x47, 0xa1);
-    static final String PLEX = "com.plexapp.android";
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -73,8 +72,9 @@ public class MoviesActivity extends Activity {
     private TextView kidMessage;
     private LinearLayout parentList;
     private boolean playing;
-    /** Picks open in the tablet's own Plex app (TV paused or not set up, Plex installed). */
+    /** Picks play here, in PlayerActivity (TV paused or not set up). */
     private boolean onTablet;
+    private String kidTheme = "sky";
 
     private SoundPool sounds;
     private int popSound;
@@ -198,7 +198,8 @@ public class MoviesActivity extends Activity {
                 return;
             }
             kidMessage.setText("");
-            onTablet = result.optBoolean("local") && installed(PLEX);
+            onTablet = result.optBoolean("local");
+            kidTheme = result.optString("theme", "sky");
             View grid = buildGrid(movies);
             kidRoot.addView(grid, 1, fill());
             int wait = result.optInt("cooldown");
@@ -371,18 +372,22 @@ public class MoviesActivity extends Activity {
         });
     }
 
-    /** Watch it on the tablet: the bridge checks it (and picks a show's episode), then Plex opens it. */
+    /**
+     * Watch it on the tablet: the bridge checks it (and picks a show's
+     * episode) and gives a stream from the Plex server for our own player.
+     */
     private void playHere(String key) {
         flash("Here it comes! 🎬", 0, true);
         call("POST", "/play-local/" + key, result -> {
             String status = result == null ? "error" : result.optString("result");
-            if ("ok".equals(status) && openInPlex(result.optString("server"),
-                    result.optString("key"), result.optString("type"))) {
-                // Back to the carousel underneath, so Home lands there.
-                ui.postDelayed(this::finish, 1500);
+            playing = false;
+            if ("ok".equals(status)) {
+                startActivity(new Intent(this, PlayerActivity.class)
+                        .putExtra(PlayerActivity.EXTRA_STREAM, BRIDGE + "/" + result.optString("stream"))
+                        .putExtra(PlayerActivity.EXTRA_THEME, kidTheme));
+                flash("", 0);
                 return;
             }
-            playing = false;
             switch (status) {
                 case "use_tv":
                     // The TV came back on duty since the list loaded.
@@ -401,48 +406,6 @@ public class MoviesActivity extends Activity {
         });
     }
 
-    /**
-     * Opens the title in the tablet's Plex app: its play link first, then the
-     * title's page, then just the app (the kid's profile picks from there).
-     */
-    private boolean openInPlex(String server, String key, String type) {
-        String metadata = Uri.encode("/library/metadata/" + key);
-        String[] links = {
-                "plex://play/?metadataKey=" + metadata + "&metadataType=" + ("episode".equals(type) ? 4 : 1)
-                        + "&server=" + server,
-                "https://app.plex.tv/desktop/#!/server/" + server + "/details?key=" + metadata,
-        };
-        for (String link : links) {
-            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(link)).setPackage(PLEX);
-            if (!server.isEmpty() && view.resolveActivity(getPackageManager()) != null && start(view)) {
-                return true;
-            }
-        }
-        Intent app = getPackageManager().getLaunchIntentForPackage(PLEX);
-        return app != null && start(app);
-    }
-
-    private boolean start(Intent intent) {
-        try {
-            startActivity(intent);
-            // Tablet Home covers the screen until it plays, with its home button on top.
-            sendBroadcast(new Intent().setClassName("org.tabletos.home", "org.tabletos.home.PlayerCover")
-                    .putExtra("package", PLEX));
-            return true;
-        } catch (Exception e) {  // not found, or refused by the kiosk's lock task
-            Log.w(TAG, "couldn't open " + intent, e);
-            return false;
-        }
-    }
-
-    private boolean installed(String pkg) {
-        try {
-            getPackageManager().getPackageInfo(pkg, 0);
-            return true;
-        } catch (PackageManager.NameNotFoundException e) {
-            return false;
-        }
-    }
 
     /** Dims the posters for the seconds left after a pick, with a friendly note. */
     private void waitForTv(View grid, int seconds) {

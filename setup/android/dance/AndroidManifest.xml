@@ -3,8 +3,8 @@
      on the TV through YouTube; the parents choose the songs on the Movies & TV web page. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.tabletos.dance"
-    android:versionCode="6"
-    android:versionName="1.4">
+    android:versionCode="7"
+    android:versionName="1.5">
 
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.INTERNET" />

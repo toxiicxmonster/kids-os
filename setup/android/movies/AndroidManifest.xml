@@ -1,17 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Movies: the kid taps a poster and it plays on the TV; the parent sets it up. -->
+<!-- Movies: the kid taps a poster and it plays on the TV (or, while the TV is
+     paused, right here in our own player); the parent sets it up. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.tabletos.movies"
-    android:versionCode="19"
-    android:versionName="1.17">
+    android:versionCode="20"
+    android:versionName="1.18">
 
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- To see (and open) the kid's own player app on the tablet. -->
-    <queries>
-        <package android:name="com.plexapp.android" />
-        <package android:name="org.tabletos.home" />
-    </queries>
 
     <!-- Cleartext only to the host bridge on the private Waydroid network. -->
     <application
@@ -30,5 +26,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Watching on the tablet: a Plex title streamed through the host's bridge. -->
+        <activity
+            android:name=".PlayerActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation" />
     </application>
 </manifest>

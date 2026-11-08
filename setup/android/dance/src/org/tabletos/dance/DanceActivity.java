@@ -495,10 +495,12 @@ public class DanceActivity extends Activity {
         });
     }
 
-    /** The song in YouTube Kids: its watch links first, then just the app. */
+    /**
+     * The song in YouTube Kids: its own kids.youtube.com watch link plays it
+     * straight away (tested on the Dell); then a youtube.com link; then just the app.
+     */
     private boolean openInYouTubeKids(String id) {
-        String[] links = {"https://www.youtubekids.com/watch?v=" + id, "vnd.youtube:" + id,
-                "https://www.youtube.com/watch?v=" + id};
+        String[] links = {"https://kids.youtube.com/watch?v=" + id, "https://www.youtube.com/watch?v=" + id};
         for (String link : links) {
             Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(link)).setPackage(YOUTUBE_KIDS);
             if (view.resolveActivity(getPackageManager()) != null && start(view)) {
