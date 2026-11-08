@@ -69,7 +69,7 @@ public class PlayerActivity extends Activity {
         tapCatcher.setOnClickListener(v -> showControls());
         root.addView(tapCatcher, fill());
 
-        pauseButton = roundButton("⏸", 64, 160);
+        pauseButton = roundButton("⏸️", 64, 160);
         pauseButton.setOnClickListener(v -> bounce(v, this::togglePause));
         pauseButton.setVisibility(View.GONE);
         root.addView(pauseButton, new FrameLayout.LayoutParams(dp(160), dp(160), Gravity.CENTER));
@@ -194,7 +194,8 @@ public class PlayerActivity extends Activity {
         if (!started || cover.getVisibility() == View.VISIBLE) {
             return;
         }
-        pauseButton.setText(video.isPlaying() ? "⏸" : "▶");
+        // Emoji forms, so both draw in colour (a plain ▶ comes out a small grey triangle).
+        pauseButton.setText(video.isPlaying() ? "⏸️" : "▶️");
         pauseButton.setVisibility(View.VISIBLE);
         ui.removeCallbacks(hideControls);
         if (video.isPlaying()) {
