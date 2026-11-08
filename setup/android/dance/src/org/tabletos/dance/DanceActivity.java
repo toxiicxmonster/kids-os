@@ -1,7 +1,10 @@
 package org.tabletos.dance;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.net.Uri;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -50,6 +53,10 @@ import java.util.concurrent.Executors;
  *
  * The host's bridge (192.168.240.1:8766) starts YouTube on the TV and follows
  * each song to its end; picks share Movies & TV's pause and 90 s lockout.
+ *
+ * While the TV is paused or no TV is set up, and YouTube Kids is installed in
+ * this kid's Android, a song opens in YouTube Kids on the tablet instead (one
+ * song at a time: a dance party can't be followed there).
  */
 public class DanceActivity extends Activity {
     private static final String TAG = "TabletDance";
@@ -58,6 +65,7 @@ public class DanceActivity extends Activity {
     private static final int NAVY = Color.rgb(0x0d, 0x47, 0xa1);
     private static final int PINK = Color.rgb(0xff, 0x5c, 0xa8);
     private static final int GREEN = Color.rgb(0x2e, 0xb8, 0x5c);
+    static final String YOUTUBE_KIDS = "com.google.android.apps.youtube.kids";
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -69,6 +77,8 @@ public class DanceActivity extends Activity {
     private TextView goButton;
     private boolean partyMode;
     private boolean playing;
+    /** Songs open in the tablet's own YouTube Kids (TV paused or not set up, app installed). */
+    private boolean onTablet;
     private int partyMax = 6;
     private final List<String> party = new ArrayList<>();
     private final List<TextView> badges = new ArrayList<>();
@@ -198,12 +208,18 @@ public class DanceActivity extends Activity {
                 return;
             }
             message.setText("");
+            onTablet = result.optBoolean("local") && installed(YOUTUBE_KIDS);
             grid = buildGrid(songs);
             root.addView(grid, 1, fill());
-            root.addView(modeButtons());
+            if (!onTablet) {
+                root.addView(modeButtons());
+            }
             root.addView(goButton());
             root.addView(homeButton());
             int wait = result.optInt("cooldown");
+            if (onTablet) {
+                return;  // the TV's pause and lockout don't apply here
+            }
             if (result.optBoolean("paused")) {
                 grid.setAlpha(0.35f);
                 flash("Dance time is taking a break 💤", 0, false);
@@ -301,7 +317,13 @@ public class DanceActivity extends Activity {
                     tapFeedback(v, () -> toggleParty(id));
                 } else {
                     playing = true;  // one pick per visit; further taps are ignored
-                    tapFeedback(v, () -> play(id));
+                    tapFeedback(v, () -> {
+                        if (onTablet) {
+                            playHere(id);
+                        } else {
+                            play(id);
+                        }
+                    });
                 }
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(tileW, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -447,6 +469,63 @@ public class DanceActivity extends Activity {
                     flash("Oops! That didn't work.\nAsk a grown-up.", 6000, false);
             }
         });
+    }
+
+    /** Dance on the tablet: the bridge checks the song (and logs it), then YouTube Kids opens it. */
+    private void playHere(String id) {
+        flash("Here it comes! 💃", 0, true);
+        call("POST", "/dance-local/" + id, result -> {
+            String status = result == null ? "error" : result.optString("result");
+            if ("ok".equals(status) && openInYouTubeKids(id)) {
+                ui.postDelayed(this::finish, 1500);  // back to the carousel underneath
+                return;
+            }
+            playing = false;
+            switch (status) {
+                case "use_tv":
+                    playing = true;  // the TV came back on duty since the list loaded
+                    play(id);
+                    break;
+                case "sleeping":
+                    flash("The tablet is sleeping 🌙\nSee you later!", 0, false);
+                    break;
+                default:
+                    flash("Oops! That didn't work.\nAsk a grown-up.", 6000, false);
+            }
+        });
+    }
+
+    /** The song in YouTube Kids: its watch links first, then just the app. */
+    private boolean openInYouTubeKids(String id) {
+        String[] links = {"https://www.youtubekids.com/watch?v=" + id, "vnd.youtube:" + id,
+                "https://www.youtube.com/watch?v=" + id};
+        for (String link : links) {
+            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(link)).setPackage(YOUTUBE_KIDS);
+            if (view.resolveActivity(getPackageManager()) != null && start(view)) {
+                return true;
+            }
+        }
+        Intent app = getPackageManager().getLaunchIntentForPackage(YOUTUBE_KIDS);
+        return app != null && start(app);
+    }
+
+    private boolean start(Intent intent) {
+        try {
+            startActivity(intent);
+            return true;
+        } catch (Exception e) {  // not found, or refused by the kiosk's lock task
+            Log.w(TAG, "couldn't open " + intent, e);
+            return false;
+        }
+    }
+
+    private boolean installed(String pkg) {
+        try {
+            getPackageManager().getPackageInfo(pkg, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
     }
 
     /**

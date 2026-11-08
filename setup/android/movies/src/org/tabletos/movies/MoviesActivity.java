@@ -1,7 +1,10 @@
 package org.tabletos.movies;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.net.Uri;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -52,12 +55,17 @@ import java.util.concurrent.Executors;
  *
  * Everything goes through the tablet-movies-bridge service on the Linux host,
  * which holds the Plex sign-in and talks to the TV.
+ *
+ * While the TV is paused (web page) or no TV is set up, and the Plex app is
+ * installed in this kid's Android, Plex titles open in that app on the tablet
+ * instead ("local" from the bridge). Netflix titles stay TV-only.
  */
 public class MoviesActivity extends Activity {
     private static final String TAG = "TabletMovies";
     private static final String BRIDGE = "http://192.168.240.1:8766/api";
     private static final String MODE_PROP = "persist.waydroid.tablet_mode";
     private static final int NAVY = Color.rgb(0x0d, 0x47, 0xa1);
+    static final String PLEX = "com.plexapp.android";
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -65,6 +73,8 @@ public class MoviesActivity extends Activity {
     private TextView kidMessage;
     private LinearLayout parentList;
     private boolean playing;
+    /** Picks open in the tablet's own Plex app (TV paused or not set up, Plex installed). */
+    private boolean onTablet;
 
     private SoundPool sounds;
     private int popSound;
@@ -188,9 +198,14 @@ public class MoviesActivity extends Activity {
                 return;
             }
             kidMessage.setText("");
+            onTablet = result.optBoolean("local") && installed(PLEX);
             View grid = buildGrid(movies);
             kidRoot.addView(grid, 1, fill());
             int wait = result.optInt("cooldown");
+            if (onTablet) {
+                // Watching here instead: the TV's pause and lockout don't apply.
+                return;
+            }
             if (result.optBoolean("paused")) {
                 // A parent paused movie time (web portal): dim the posters and say so.
                 grid.setAlpha(0.35f);
@@ -280,14 +295,29 @@ public class MoviesActivity extends Activity {
             title.setPadding(0, dp(8), 0, 0);
             tile.addView(title, new LinearLayout.LayoutParams(posterW, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+            // On the tablet, only Plex titles play: Netflix ones are dimmed.
+            boolean tvOnly = onTablet && "netflix".equals(m.optString("kind"));
+            if (tvOnly) {
+                tile.setAlpha(0.35f);
+            }
             tile.setOnClickListener(v -> {
                 // One title per visit: taps on other posters are ignored from
                 // the first tap on, while it starts and after it's playing.
                 if (playing) {
                     return;
                 }
+                if (tvOnly) {
+                    tapFeedback(v, () -> flash("That one plays on the TV 📺", 3000));
+                    return;
+                }
                 playing = true;
-                tapFeedback(v, () -> play(key));
+                tapFeedback(v, () -> {
+                    if (onTablet) {
+                        playHere(key);
+                    } else {
+                        play(key);
+                    }
+                });
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(tileW, ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.leftMargin = i % columns == 0 ? 0 : gap;
@@ -339,6 +369,76 @@ public class MoviesActivity extends Activity {
                     flash("Oops! That didn't work.\nAsk a grown-up.", 6000);
             }
         });
+    }
+
+    /** Watch it on the tablet: the bridge checks it (and picks a show's episode), then Plex opens it. */
+    private void playHere(String key) {
+        flash("Here it comes! 🎬", 0, true);
+        call("POST", "/play-local/" + key, result -> {
+            String status = result == null ? "error" : result.optString("result");
+            if ("ok".equals(status) && openInPlex(result.optString("server"),
+                    result.optString("key"), result.optString("type"))) {
+                // Back to the carousel underneath, so Home lands there.
+                ui.postDelayed(this::finish, 1500);
+                return;
+            }
+            playing = false;
+            switch (status) {
+                case "use_tv":
+                    // The TV came back on duty since the list loaded.
+                    playing = true;
+                    play(key);
+                    break;
+                case "sleeping":
+                    flash("The tablet is sleeping 🌙\nSee you later!", 0);
+                    break;
+                case "tv_only":
+                    flash("That one plays on the TV 📺", 4000);
+                    break;
+                default:
+                    flash("Oops! That didn't work.\nAsk a grown-up.", 6000);
+            }
+        });
+    }
+
+    /**
+     * Opens the title in the tablet's Plex app: its play link first, then the
+     * title's page, then just the app (the kid's profile picks from there).
+     */
+    private boolean openInPlex(String server, String key, String type) {
+        String metadata = Uri.encode("/library/metadata/" + key);
+        String[] links = {
+                "plex://play/?metadataKey=" + metadata + "&metadataType=" + ("episode".equals(type) ? 4 : 1)
+                        + "&server=" + server,
+                "https://app.plex.tv/desktop/#!/server/" + server + "/details?key=" + metadata,
+        };
+        for (String link : links) {
+            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(link)).setPackage(PLEX);
+            if (!server.isEmpty() && view.resolveActivity(getPackageManager()) != null && start(view)) {
+                return true;
+            }
+        }
+        Intent app = getPackageManager().getLaunchIntentForPackage(PLEX);
+        return app != null && start(app);
+    }
+
+    private boolean start(Intent intent) {
+        try {
+            startActivity(intent);
+            return true;
+        } catch (Exception e) {  // not found, or refused by the kiosk's lock task
+            Log.w(TAG, "couldn't open " + intent, e);
+            return false;
+        }
+    }
+
+    private boolean installed(String pkg) {
+        try {
+            getPackageManager().getPackageInfo(pkg, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
     }
 
     /** Dims the posters for the seconds left after a pick, with a friendly note. */

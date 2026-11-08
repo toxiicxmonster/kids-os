@@ -14,6 +14,10 @@ Kid endpoints (anyone on the Waydroid network):
   GET  /api/movies              approved movies
   GET  /api/poster/<key>        poster image
   POST /api/play/<key>          play from the beginning on the TV, if it's on
+  POST /api/play-local/<key>    watch on the tablet instead (only while the TV is paused or
+                                no TV is set up; "local" in /api/movies): picks a show's
+                                episode, resets progress, returns the Plex key to open
+  POST /api/dance-local/<id>    the same for a Dance song (the app opens YouTube Kids)
   GET  /api/theme               the logged-in kid's theme; POST /api/theme/<name> sets it
   GET  /api/dance               the Dance app's songs; GET /api/dance-thumb/<id> a picture
   POST /api/dance-play/<id,...> play the songs on the TV (YouTube), one after another
@@ -271,6 +275,43 @@ def set_pause(cfg, how):
             raise ValueError("pause must be 1 minute to 24 hours")
         cfg["paused_until"] = time.time() + minutes * 60
     save(cfg)
+
+
+def tablet_mode(cfg):
+    """Movies & TV and Dance play on the tablet itself (in the kid's own Plex
+    and YouTube Kids apps, when they're installed) while the TV is paused or
+    no TV is set up; otherwise everything goes to the TV."""
+    return paused_until(cfg) is not None or not cfg.get("tv")
+
+
+def play_local(cfg, key=None, song=None):
+    """A pick to watch on the tablet: checks it's allowed and on the kid's list,
+    picks a show's episode and clears the saved spot (always from the start),
+    then tells the app what to open. Nothing goes to the TV."""
+    kid = cfg.kid if isinstance(cfg, KidView) else None
+    if kid and not kid_allowed(cfg.root, kid)[0]:
+        return {"result": "sleeping", "message": "The tablet is sleeping."}
+    if not tablet_mode(cfg):
+        return {"result": "use_tv", "message": "The TV is on duty: play it there."}
+    if song is not None:
+        found = next((s for s in cfg.get("dance", []) if s["id"] == song), None)
+        if not found:
+            return {"result": "error", "message": "That song isn't on the list."}
+        title, kind, out = found["title"], "dance", {"video": song}
+    else:
+        item = next((m for m in cfg.get("movies", []) if m["key"] == key), None)
+        if not item:
+            return {"result": "error", "message": "That isn't on the list."}
+        if item.get("kind") not in PLEX_TYPES:
+            return {"result": "tv_only", "message": "That one only plays on the TV."}
+        play_key = pick_episode(cfg, key) if item["kind"] == "show" else key
+        reset_progress(cfg, play_key)
+        title, kind = item["title"], item["kind"]
+        out = {"key": play_key, "server": cfg.get("server_id"),
+               "type": "episode" if item["kind"] == "show" else "movie"}
+    if kid:
+        add_history(kid, kind, title)
+    return {"result": "ok", **out}
 
 
 def add_item(cfg, key):
@@ -1664,7 +1705,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             kid_routes = {("GET", "movies"), ("GET", "poster"), ("POST", "play"), ("GET", "theme"),
                           ("POST", "theme"), ("GET", "dance"), ("GET", "dance-thumb"), ("POST", "dance-play"),
                           ("GET", "allowed"), ("POST", "activity"), ("GET", "coloring"),
-                          ("GET", "coloring-page")}
+                          ("GET", "coloring-page"), ("POST", "play-local"), ("POST", "dance-local")}
             if route not in kid_routes and not (client.is_loopback or parent_on_desktop()):
                 return self.reply(403, {"error": "parent_only"})
             # Whose lists: the kid on the screen; for the parent (Movies & TV setup
@@ -1688,6 +1729,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.reply(200, play(cfg, arg or None))
                 finally:
                     play_lock.release()
+            if route in (("POST", "play-local"), ("POST", "dance-local")):
+                # Plex round trips (episode, progress), so outside the config lock.
+                with lock:
+                    cfg = view(load())
+                arg = parts[1] if len(parts) > 1 else ""
+                if route[1] == "dance-local":
+                    return self.reply(200, play_local(cfg, song=arg))
+                return self.reply(200, play_local(cfg, key=arg))
             if route == ("GET", "dance-thumb"):
                 return self.reply(200, dance_thumb(parts[1] if len(parts) > 1 else ""), "image/jpeg")
             if route == ("GET", "poster"):
@@ -1735,6 +1784,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return 200, {"movies": [{k: m.get(k) for k in ("key", "title", "year", "kind")} for m in movies],
                          "tv": tv.get("location") or tv.get("name"),
                          "paused": until is not None, "pause_text": pause_text(until),
+                         "local": tablet_mode(cfg),
                          "cooldown": cooldown_left(), "theme": theme_of(cfg, active_kid())}
         if route == ("GET", "theme"):
             return 200, {"theme": theme_of(cfg, active_kid()), "themes": THEMES}
@@ -1743,7 +1793,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == ("GET", "dance"):
             until = paused_until(cfg)
             return 200, {"songs": [{k: song[k] for k in ("id", "title")} for song in cfg.get("dance", [])],
-                         "paused": until is not None, "cooldown": cooldown_left(),
+                         "paused": until is not None, "local": tablet_mode(cfg), "cooldown": cooldown_left(),
                          "theme": theme_of(cfg, active_kid()), "party_max": DANCE_PARTY_MAX}
         if route == ("POST", "theme"):
             kid = active_kid()

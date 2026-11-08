@@ -230,6 +230,9 @@ public class HomeActivity extends Activity {
         }
         List<String> allowed = new ArrayList<>(approved());
         allowed.add(getPackageName());
+        // Movies & TV and Dance open these to play on the tablet (while the TV is
+        // paused or not set up), even when they aren't in the carousel themselves.
+        allowed.addAll(PLAYERS);
         dpm.setLockTaskPackages(admin, allowed.toArray(new String[0]));
         // Keep only the Home button: no recents, notifications, status bar or power menu.
         dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_HOME);
@@ -263,6 +266,9 @@ public class HomeActivity extends Activity {
     private static final Set<String> BUILT_IN = Set.of("org.tabletos.movies", "org.tabletos.dance",
             "org.tabletos.paint", "org.khanacademy.khankids");
     private static final String KEY_SEEN_BUILT_IN = "seen_built_in";
+    /** The player apps our apps hand titles to for watching on the tablet. */
+    private static final Set<String> PLAYERS = Set.of("com.plexapp.android",
+            "com.google.android.apps.youtube.kids");
     /** When the kid last opened an app ("used_" + package): the newest goes first in the carousel. */
     private static final String KEY_USED = "used_";
 

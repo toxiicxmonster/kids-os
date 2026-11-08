@@ -45,6 +45,16 @@ gitignored.)
   `KidView` (lists) and `kid_settings` (schedule, overrides); minute-by-minute
   usage and history live in their own files (config writes re-trigger the
   login-screen sync).
+- **Watching on the tablet**: while movie time is paused or no TV is set up
+  (`tablet_mode`, `"local"` in `/api/movies` and `/api/dance`), Movies & TV
+  hands Plex titles to the kid's own Plex app (`com.plexapp.android`) and Dance
+  hands songs to YouTube Kids (one song, no party), if those are installed in
+  that kid's Android. `POST /api/play-local/<key>` / `dance-local/<id>` check
+  tablet time and the list, pick a show's episode and reset progress; the app
+  then tries Plex's `plex://play/?metadataKey=…` link, then the app.plex.tv
+  details link, then just opens the app. Netflix titles are dimmed (TV only).
+  Tablet Home puts both players on the lock-task allowlist (`PLAYERS`) without
+  adding them to the carousel; the apps' manifests `<queries>` them.
 - **Paint** (`android/paint`): fill/brush on coloring pages or blank paper,
   undo (wipe included), each page's painting saved in the kid's Android. The
   bridge downloads each page once, makes it pure black lines on white
