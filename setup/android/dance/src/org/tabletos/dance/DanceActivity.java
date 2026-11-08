@@ -512,6 +512,9 @@ public class DanceActivity extends Activity {
     private boolean start(Intent intent) {
         try {
             startActivity(intent);
+            // Tablet Home covers the screen until it plays, with its home button on top.
+            sendBroadcast(new Intent().setClassName("org.tabletos.home", "org.tabletos.home.PlayerCover")
+                    .putExtra("package", YOUTUBE_KIDS));
             return true;
         } catch (Exception e) {  // not found, or refused by the kiosk's lock task
             Log.w(TAG, "couldn't open " + intent, e);

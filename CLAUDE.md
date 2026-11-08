@@ -53,8 +53,13 @@ gitignored.)
   tablet time and the list, pick a show's episode and reset progress; the app
   then tries Plex's `plex://play/?metadataKey=…` link, then the app.plex.tv
   details link, then just opens the app. Netflix titles are dimmed (TV only).
-  Tablet Home puts both players on the lock-task allowlist (`PLAYERS`) without
-  adding them to the carousel; the apps' manifests `<queries>` them.
+  Tablet Home puts both players on the lock-task allowlist
+  (`PlayerCover.PLAYERS`) without adding them to the carousel; the apps'
+  manifests `<queries>` them. After the hand-off the app broadcasts to Tablet
+  Home's `PlayerCover`: a themed "Here it comes!" overlay swallows every tap
+  until media sound has run 1.5 s (so no wandering into Plex profiles), with
+  the floating home button (`HomeBubble`) on top for as long as the player is
+  open; after 90 s with no sound it says to tap home.
 - **Paint** (`android/paint`): fill/brush on coloring pages or blank paper,
   undo (wipe included), each page's painting saved in the kid's Android. The
   bridge downloads each page once, makes it pure black lines on white
@@ -135,3 +140,17 @@ gitignored.)
 - **ARM apps** need libndk (casualsnek/waydroid_script, pinned); libhoudini
   builds expire.
 - **Cloudflare-fronted Plex servers** reject Python's default user agent.
+- **LG webOS TVs** (`cfg["tv"]["kind"] == "lg"`; Roku is the default): SSAP over
+  a WebSocket (wss 3001, else ws 3000; a minimal stdlib client in the bridge),
+  found by SSDP `urn:lge-com:service:webos-second-screen:1`. Choosing one
+  pairs (Accept on the TV; the client key goes in the config, never to
+  Android). Netflix: `launch netflix` with `contentId
+  m=https://www.netflix.com/watch/<id>&source_type=4`; YouTube:
+  `youtube.leanback.v4` with `contentTarget https://www.youtube.com/tv?v=<id>`;
+  Plex (`cdp-30`): close, launch, ENTER on "Who's watching?", then Companion
+  playMedia directly (ports 32500/8324) or relayed by the server
+  (`/clients` by IP), then seekTo 0. Buttons go over the pointer socket.
+  Play state is `com.webos.media/getForegroundAppInfo`; the LG gives no
+  position, so there's no Netflix rewind and a dance party plays only its
+  first song. Tested only against a fake TV (2026-11-08); `--lg` is the
+  on-box tester.

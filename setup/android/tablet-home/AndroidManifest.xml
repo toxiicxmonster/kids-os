@@ -2,8 +2,8 @@
 <!-- Tablet Home: the kid's carousel launcher and the parent's app picker. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.tabletos.home"
-    android:versionCode="21"
-    android:versionName="1.18">
+    android:versionCode="22"
+    android:versionName="1.19">
 
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
@@ -42,6 +42,13 @@
             android:name=".VolumeReceiver"
             android:exported="true"
             android:permission="android.permission.DUMP" />
+
+        <!-- Movies & TV / Dance handed a title to Plex or YouTube Kids: cover the
+             screen until it plays, with the home button on top. (It only ever
+             covers and offers home, so any app may ask.) -->
+        <receiver
+            android:name=".PlayerCover"
+            android:exported="true" />
 
         <receiver
             android:name=".AdminReceiver"

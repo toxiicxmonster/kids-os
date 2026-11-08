@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kids OS Movies bridge: plays approved Plex movies on the chosen Roku TV.
+"""Kids OS Movies bridge: plays approved Plex movies on the chosen Roku or LG webOS TV.
 
 Netflix titles can go on the list too: they open in the Netflix app on the
 Roku (ECP deep link), in whichever Netflix profile was used last on that TV,
@@ -34,8 +34,8 @@ the host itself):
   GET  /api/link                has the code been entered yet?
   GET  /api/profiles            Plex Home profiles
   POST /api/profile/<id>        use this profile for playback
-  GET  /api/tvs                 Roku TVs on the network
-  POST /api/tv/<serial>         use this TV
+  GET  /api/tvs                 Roku and LG webOS TVs on the network
+  POST /api/tv/<serial>         use this TV (an LG shows a prompt: Accept there within a minute)
   GET  /api/library?q=          movies the profile can see
   POST/DELETE /api/movies/<key> add/remove an approved movie
   POST /api/netflix/<id>        add a Netflix title (the number in its netflix.com/title/ link)
@@ -61,6 +61,7 @@ Web portal for the parents' phones (home network only, PIN-protected):
                                 POST coloring-url {"url", "title"}, POST coloring-upload?title=
                                 (the picture file as the body)
 """
+import base64
 import collections.abc
 import copy
 import datetime
@@ -82,6 +83,7 @@ import pathlib
 import random
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -639,32 +641,41 @@ def roku_info(ip):
 
 
 def discover_tvs(wait=3.0):
-    msg = (b"M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nMan: \"ssdp:discover\"\r\n"
-           b"ST: roku:ecp\r\nMX: 2\r\n\r\n")
+    """Roku TVs (ECP) and LG webOS TVs (their second-screen service) on the home network."""
+    searches = [(b"M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nMan: \"ssdp:discover\"\r\n"
+                 b"ST: " + st + b"\r\nMX: 2\r\n\r\n") for st in (b"roku:ecp", LG_SSDP_ST.encode())]
     ips = set()
+    lg = {}  # ip -> device description URL
     socks = []
     for addr in local_ipv4s():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(addr))
         s.bind((addr, 0))
         s.settimeout(0.3)
-        s.sendto(msg, ("239.255.255.250", 1900))
+        for msg in searches:
+            s.sendto(msg, ("239.255.255.250", 1900))
         socks.append(s)
     end = time.time() + wait
     while time.time() < end:
         for s in socks:
             try:
                 data, peer = s.recvfrom(2048)
-                if b"roku" in data.lower():
-                    ips.add(peer[0])
             except socket.timeout:
-                pass
+                continue
+            low = data.lower()
+            if LG_SSDP_ST.encode().lower() in low or b"webos" in low:
+                found = re.search(rb"(?im)^location:\s*(\S+)", data)
+                lg[peer[0]] = found[1].decode() if found else None
+            elif b"roku" in low:
+                ips.add(peer[0])
     tvs = []
     for ip in sorted(ips):
         try:
             tvs.append(roku_info(ip))
         except OSError:
             pass
+    for ip, location in sorted(lg.items()):
+        tvs.append(lg_describe(ip, location))
     return tvs
 
 
@@ -673,6 +684,8 @@ def find_tv(cfg):
     tv = cfg.get("tv")
     if not tv:
         return None
+    if tv.get("kind") == "lg":
+        return lg_find(tv)
     try:
         info = roku_info(tv["ip"])
         if info["serial"] == tv["serial"]:
@@ -690,8 +703,8 @@ def find_tv(cfg):
     return None
 
 
-def companion_id(ip, timeout=2):
-    root = ET.fromstring(fetch(f"http://{ip}:8324/resources", timeout=timeout))
+def companion_id(ip, timeout=2, port=8324):
+    root = ET.fromstring(fetch(f"http://{ip}:{port}/resources", timeout=timeout))
     return root.find("Player").get("machineIdentifier")
 
 
@@ -880,6 +893,8 @@ def start_dance(cfg, ids):
     tv = find_tv(cfg)
     if not tv or tv["power"] != "PowerOn":
         return {"result": "tv_off", "message": "The TV is off."}
+    if tv.get("kind") == "lg":
+        return lg_start_dance(tv, queue)
     ip = tv["ip"]
     try:
         roku_key(ip, "Home")
@@ -944,7 +959,11 @@ def tv_now():
         cfg = load()
     tv = find_tv(cfg) if cfg.get("tv") else None
     out = {"tv": None, "last": dict(last_play) or None}
-    if tv:
+    if tv and tv.get("kind") == "lg":
+        app, state = lg_now(tv) if tv["power"] == "PowerOn" else (None, None)
+        out["tv"] = {"name": tv.get("location") or tv.get("name"), "power": tv["power"], "app": app,
+                     "state": state, "position": 0}
+    elif tv:
         app = None
         try:
             found = re.search(r"<app[^>]*>([^<]*)</app>", fetch(f"http://{tv['ip']}:8060/query/active-app",
@@ -969,7 +988,11 @@ def tv_stop():
     tv = find_tv(cfg)
     if not tv or tv["power"] != "PowerOn":
         return {"ok": False, "message": "The TV is off."}
-    roku_key(tv["ip"], "Home")
+    if tv.get("kind") == "lg":
+        with lg_session(tv) as s:
+            s.button("HOME")
+    else:
+        roku_key(tv["ip"], "Home")
     return {"ok": True}
 
 
@@ -1029,6 +1052,8 @@ def start(cfg, key):
     tv = find_tv(cfg)
     if not tv or tv["power"] != "PowerOn":
         return {"result": "tv_off", "message": "The TV is off."}
+    if tv.get("kind") == "lg":
+        return lg_start(cfg, item, key, tv)
 
     if item.get("kind") == "netflix":
         # Opens Netflix straight to the title, from anywhere (even another app).
@@ -1068,20 +1093,7 @@ def start(cfg, key):
     fetch(f"http://{ip}:8060/keypress/Select", "POST", timeout=5)
     time.sleep(6)  # signing in
 
-    # A TV show plays one of its episodes, picked at random.
-    if item.get("kind") == "show":
-        key = pick_episode(cfg, key)
-    reset_progress(cfg, key)
-    uri = f"server://{cfg['server_id']}/com.plexapp.plugins.library/library/metadata/{key}"
-    q = urllib.parse.urlencode({"type": "video", "uri": uri, "shuffle": 0, "repeat": 0, "continuous": 0})
-    queue_id = plex_json(cfg, f"{cfg['server_url']}/playQueues?{q}", cfg["server_token"],
-                         "POST")["MediaContainer"]["playQueueID"]
-    server = urllib.parse.urlparse(cfg["server_url"])
-    params = {"key": f"/library/metadata/{key}", "offset": 0, "type": "video",
-              "containerKey": f"/playQueues/{queue_id}?own=1&window=200",
-              "machineIdentifier": cfg["server_id"], "address": server.hostname,
-              "port": server.port or (443 if server.scheme == "https" else 80),
-              "protocol": server.scheme, "token": cfg["server_token"]}
+    params = plex_play_params(cfg, item, key)
     headers = {**plex_headers(cfg), "X-Plex-Target-Client-Identifier": target}
     # Check the TV really is playing, and ask once more if not.
     for attempt in range(2):
@@ -1095,6 +1107,25 @@ def start(cfg, key):
         return {"result": "error", "message": "The TV didn't start it."}
     threading.Thread(target=rewind_when_playing, args=(cfg, ip, target), daemon=True).start()
     return {"result": "playing", "message": "It's playing on the TV!"}
+
+
+def plex_play_params(cfg, item, key):
+    """A Plex Companion playMedia for the title, from the beginning: a show
+    plays one of its episodes, picked at random; the saved spot is cleared
+    and a fresh play queue made (commandID is added per send)."""
+    if item.get("kind") == "show":
+        key = pick_episode(cfg, key)
+    reset_progress(cfg, key)
+    uri = f"server://{cfg['server_id']}/com.plexapp.plugins.library/library/metadata/{key}"
+    q = urllib.parse.urlencode({"type": "video", "uri": uri, "shuffle": 0, "repeat": 0, "continuous": 0})
+    queue_id = plex_json(cfg, f"{cfg['server_url']}/playQueues?{q}", cfg["server_token"],
+                         "POST")["MediaContainer"]["playQueueID"]
+    server = urllib.parse.urlparse(cfg["server_url"])
+    return {"key": f"/library/metadata/{key}", "offset": 0, "type": "video",
+            "containerKey": f"/playQueues/{queue_id}?own=1&window=200",
+            "machineIdentifier": cfg["server_id"], "address": server.hostname,
+            "port": server.port or (443 if server.scheme == "https" else 80),
+            "protocol": server.scheme, "token": cfg["server_token"]}
 
 
 def roku_player(ip):
@@ -1729,6 +1760,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.reply(200, play(cfg, arg or None))
                 finally:
                     play_lock.release()
+            if route == ("POST", "tv"):
+                # An LG waits up to a minute for Accept on the TV: not under the config lock.
+                serial = parts[1] if len(parts) > 1 else ""
+                tv = next((t for t in discover_tvs() if t["serial"] == serial), None)
+                if not tv:
+                    raise KeyError(serial)
+                chosen = {k: tv.get(k) for k in ("serial", "ip", "name", "location")}
+                if tv.get("kind") == "lg":
+                    chosen.update(kind="lg", client_key=lg_pair(tv["ip"]))
+                with lock:
+                    cfg = load()
+                    cfg["tv"] = chosen
+                    save(cfg)
+                return self.reply(200, {"tv": {k: v for k, v in chosen.items() if k != "client_key"}})
             if route in (("POST", "play-local"), ("POST", "dance-local")):
                 # Plex round trips (episode, progress), so outside the config lock.
                 with lock:
@@ -1807,7 +1852,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == ("GET", "setup"):
             return 200, {"linked": "account_token" in cfg, "account": cfg.get("account"),
                          "profile": cfg.get("profile"), "server": cfg.get("server_name"),
-                         "tv": cfg.get("tv"), "movies": len(cfg["movies"]),
+                         "tv": {k: v for k, v in cfg["tv"].items() if k != "client_key"} if cfg.get("tv") else None,
+                         "movies": len(cfg["movies"]),
                          "portal_url": f"http://{socket.gethostname()}.local:{LISTEN[1]}/",
                          "portal_pin_set": "portal_pin" in cfg}
         if route == ("POST", "portal-pin"):
@@ -1824,11 +1870,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return 200, {"profile": cfg["profile"], "server": cfg["server_name"]}
         if route == ("GET", "tvs"):
             return 200, {"tvs": discover_tvs()}
-        if route == ("POST", "tv"):
-            tv = next(t for t in discover_tvs() if t["serial"] == arg)
-            cfg["tv"] = {k: tv[k] for k in ("serial", "ip", "name", "location")}
-            save(cfg)
-            return 200, {"tv": cfg["tv"]}
         if route == ("GET", "library"):
             return 200, {"movies": library(cfg, (query.get("q") or [""])[0])}
         if route == ("POST", "movies"):
@@ -2029,6 +2070,521 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.handle_any("DELETE")
 
 
+# ---- LG webOS TVs ---------------------------------------------------------------------
+#
+# An LG TV is driven over its SSAP API (a WebSocket on port 3001 with TLS, or
+# 3000 on older sets). The first connection shows "allow this device?" on the
+# TV; Accept there gives a client key, kept in cfg["tv"]["client_key"].
+# Remote-control buttons go over a second socket the TV hands out. Like the
+# Roku, a pick only plays when the TV is already on.
+# Written before the TV arrived (2026-11-08); see CLAUDE.md for what's verified.
+
+LG_SSDP_ST = "urn:lge-com:service:webos-second-screen:1"
+LG_PLEX_APP = "cdp-30"
+LG_NETFLIX_APP = "netflix"
+LG_YOUTUBE_APP = "youtube.leanback.v4"
+LG_APP_NAMES = {LG_PLEX_APP: "Plex", LG_NETFLIX_APP: "Netflix", LG_YOUTUBE_APP: "YouTube",
+                "com.webos.app.home": "home screen", "com.webos.app.livetv": "Live TV"}
+LG_PLAY_STATES = {"playing": "play", "paused": "pause", "loaded": "buffer", "buffering": "buffer"}
+LG_PAIRING_WAIT = 60  # seconds to press Accept on the TV
+LG_PERMISSIONS = [
+    "LAUNCH", "LAUNCH_WEBAPP", "APP_TO_APP", "CLOSE", "TEST_OPEN", "TEST_PROTECTED", "CONTROL_AUDIO",
+    "CONTROL_DISPLAY", "CONTROL_INPUT_JOYSTICK", "CONTROL_INPUT_MEDIA_RECORDING",
+    "CONTROL_INPUT_MEDIA_PLAYBACK", "CONTROL_INPUT_TV", "CONTROL_POWER", "READ_APP_STATUS",
+    "READ_CURRENT_CHANNEL", "READ_INPUT_DEVICE_LIST", "READ_NETWORK_STATE", "READ_RUNNING_APPS",
+    "READ_TV_CHANNEL_LIST", "WRITE_NOTIFICATION_TOAST", "READ_POWER_STATE", "READ_COUNT_INFO",
+    "READ_INSTALLED_APPS", "CONTROL_MOUSE_AND_KEYBOARD", "READ_SETTINGS", "CONTROL_TV_SCREEN",
+    "READ_LGE_SDX", "READ_NOTIFICATIONS", "READ_UPDATE_INFO", "READ_LGE_TV_INPUT_EVENTS",
+    "READ_TV_CURRENT_TIME", "READ_MEDIA_PLAYBACK_STATE",
+]
+
+
+class LGError(OSError):
+    """The TV refused a request (or isn't there)."""
+
+
+class LGNotPaired(LGError):
+    """The TV wants Accept pressed (no client key yet, or it was forgotten)."""
+
+
+class WebSocket:
+    """Just enough of a WebSocket client (RFC 6455) for the TV: text frames,
+    client masking, ping/pong. Over wss the TV's own self-signed certificate
+    isn't checked (it's on the home network and has no real name)."""
+
+    def __init__(self, url, timeout=5):
+        u = urllib.parse.urlparse(url)
+        port = u.port or (443 if u.scheme == "wss" else 80)
+        sock = socket.create_connection((u.hostname, port), timeout=timeout)
+        if u.scheme == "wss":
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(sock, server_hostname=u.hostname)
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = (u.path or "/") + (f"?{u.query}" if u.query else "")
+        sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {u.hostname}:{port}\r\nUpgrade: websocket\r\n"
+                      f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise LGError("closed during the WebSocket handshake")
+            head += chunk
+        head, self.buf = head.split(b"\r\n\r\n", 1)
+        status = head.split(b"\r\n", 1)[0].split()
+        if len(status) < 2 or status[1] != b"101":
+            raise LGError(f"no WebSocket at {url}: {head.splitlines()[0]!r}")
+        self.sock = sock
+
+    def _read(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise LGError("the TV closed the connection")
+            self.buf += chunk
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def _send(self, opcode, data):
+        n = len(data)
+        head = bytes([0x80 | opcode])
+        if n < 126:
+            head += bytes([0x80 | n])
+        elif n < 65536:
+            head += bytes([0x80 | 126]) + n.to_bytes(2, "big")
+        else:
+            head += bytes([0x80 | 127]) + n.to_bytes(8, "big")
+        mask = os.urandom(4)
+        self.sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+    def send(self, text):
+        self._send(0x1, text.encode())
+
+    def recv(self, timeout):
+        """The next whole text message (socket.timeout if none comes in time)."""
+        self.sock.settimeout(timeout)
+        message = b""
+        while True:
+            b1, b2 = self._read(2)
+            opcode, n = b1 & 0x0F, b2 & 0x7F
+            if n == 126:
+                n = int.from_bytes(self._read(2), "big")
+            elif n == 127:
+                n = int.from_bytes(self._read(8), "big")
+            mask = self._read(4) if b2 & 0x80 else None
+            data = self._read(n)
+            if mask:
+                data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+            if opcode == 0x9:  # ping
+                self._send(0xA, data)
+            elif opcode == 0x8:
+                raise LGError("the TV closed the connection")
+            elif opcode in (0x0, 0x1, 0x2):
+                message += data
+                if b1 & 0x80:
+                    return message.decode(errors="replace")
+
+    def close(self):
+        try:
+            self._send(0x8, b"")
+        except OSError:
+            pass
+        self.sock.close()
+
+
+class LGTV:
+    """One SSAP session with the TV: `with LGTV(ip, key).open() as tv: ...`"""
+
+    def __init__(self, ip, client_key=None):
+        self.ip, self.client_key = ip, client_key
+        self.ws = None
+        self.ids = itertools.count(1)
+
+    def open(self, pairing_wait=0):
+        """Connect and register. With a valid client key the TV says yes at once;
+        without one it shows its prompt, and this waits pairing_wait seconds for
+        Accept (0: give up straight away with LGNotPaired)."""
+        last = None
+        for url in (f"wss://{self.ip}:3001", f"ws://{self.ip}:3000"):
+            try:
+                self.ws = WebSocket(url, timeout=4)
+                break
+            except (OSError, ssl.SSLError) as e:
+                last = e
+        else:
+            raise LGError(f"no LG TV answering at {self.ip} ({last!r})")
+        payload = {"forcePairing": False, "pairingType": "PROMPT",
+                   "manifest": {"manifestVersion": 1, "appVersion": "1.0", "permissions": LG_PERMISSIONS}}
+        if self.client_key:
+            payload["client-key"] = self.client_key
+        self.ws.send(json.dumps({"type": "register", "id": "register", "payload": payload}))
+        deadline = time.time() + max(pairing_wait, 6)
+        prompted = False
+        while True:
+            left = deadline - time.time()
+            try:
+                if left <= 0:
+                    raise socket.timeout
+                msg = json.loads(self.ws.recv(left))
+            except socket.timeout:
+                self.close()
+                raise LGNotPaired("Accept wasn't pressed on the TV" if prompted else "the TV didn't answer")
+            if msg.get("type") == "registered":
+                self.client_key = msg["payload"]["client-key"]
+                return self
+            if msg.get("type") == "error":
+                self.close()
+                raise LGNotPaired(f"the TV said no: {msg.get('error')}")
+            if (msg.get("payload") or {}).get("pairingType") == "PROMPT":
+                prompted = True
+                if not pairing_wait:
+                    self.close()
+                    raise LGNotPaired("the TV wants Accept pressed (pair it again in Movies & TV setup)")
+
+    def request(self, uri, payload=None, timeout=8):
+        rid = f"r{next(self.ids)}"
+        self.ws.send(json.dumps({"type": "request", "id": rid, "uri": uri, "payload": payload or {}}))
+        deadline = time.time() + timeout
+        while True:
+            try:
+                msg = json.loads(self.ws.recv(max(0.1, deadline - time.time())))
+            except socket.timeout:
+                raise LGError(f"no answer to {uri}")
+            if msg.get("id") != rid:
+                continue
+            body = msg.get("payload") or {}
+            if msg.get("type") == "error" or body.get("returnValue") is False:
+                raise LGError(f"{uri}: {msg.get('error') or body.get('errorText') or body}")
+            return body
+
+    def launch(self, app_id, content_id=None, params=None):
+        payload = {"id": app_id}
+        if content_id:
+            payload["contentId"] = content_id
+        if params:
+            payload["params"] = params
+        return self.request("ssap://system.launcher/launch", payload)
+
+    def close_app(self, app_id):
+        try:
+            self.request("ssap://system.launcher/close", {"id": app_id})
+        except LGError:
+            pass  # wasn't open
+
+    def button(self, name):
+        """A remote-control button: HOME, ENTER, BACK, UP, DOWN, LEFT, RIGHT, ..."""
+        path = self.request("ssap://com.webos.service.networkinput/getPointerInputSocket")["socketPath"]
+        pointer = WebSocket(path, timeout=4)
+        try:
+            pointer.send(f"type:button\nname:{name}\n\n")
+            time.sleep(0.3)
+        finally:
+            pointer.close()
+
+    def power(self):
+        """"PowerOn" or "PowerOff" (standby with Quick Start still answers)."""
+        try:
+            state = self.request("ssap://com.webos.service.tvpower/power/getPowerState").get("state")
+        except LGError:
+            return "PowerOn"  # older webOS has no power state: answering at all means on
+        return "PowerOn" if state in (None, "Active") else "PowerOff"
+
+    def foreground_app(self):
+        try:
+            return self.request("ssap://com.webos.applicationManager/getForegroundAppInfo").get("appId")
+        except LGError:
+            return None
+
+    def media_state(self):
+        """"play", "pause" or "buffer" for the video on screen; None when nothing's
+        playing; "?" when the TV won't say (then nobody presses OK blindly)."""
+        try:
+            info = self.request("ssap://com.webos.media/getForegroundAppInfo")
+        except LGError:
+            return "?"
+        for media in info.get("foregroundAppInfo") or []:
+            state = LG_PLAY_STATES.get(media.get("playState"))
+            if state:
+                return state
+        return None
+
+    def apps(self):
+        return {a.get("id"): a.get("title") for a in
+                self.request("ssap://com.webos.applicationManager/listApps").get("apps", [])}
+
+    def close(self):
+        if self.ws:
+            self.ws.close()
+            self.ws = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def lg_session(tv):
+    return LGTV(tv["ip"], tv.get("client_key")).open()
+
+
+def lg_port_open(ip):
+    for port in (3001, 3000):
+        try:
+            socket.create_connection((ip, port), timeout=1.5).close()
+            return True
+        except OSError:
+            pass
+    return False
+
+
+def lg_describe(ip, location):
+    """An LG TV found by discovery, in the same shape as roku_info()."""
+    tv = {"kind": "lg", "ip": ip, "serial": ip, "name": "LG TV", "location": "", "power": None}
+    if location:
+        try:
+            xml = fetch(location, timeout=3)
+            tag = lambda k: html.unescape((re.search(f"<{k}>(.*?)</{k}>", xml, re.S) or [None, ""])[1].strip())
+            tv.update(serial=tag("UDN").removeprefix("uuid:") or ip, name=tag("modelName") or "LG TV",
+                      location=tag("friendlyName"))
+        except OSError:
+            pass
+    tv["power"] = "PowerOn" if lg_port_open(ip) else "PowerOff"
+    return tv
+
+
+def lg_pair(ip):
+    """Shows the TV's prompt and waits for Accept; returns the client key."""
+    try:
+        with LGTV(ip).open(pairing_wait=LG_PAIRING_WAIT) as tv:
+            return tv.client_key
+    except LGError as e:
+        raise ValueError(f"Pairing with the TV didn't finish: {e}. Choose it again and press Accept on the TV.")
+
+
+def lg_find(tv):
+    """The paired LG TV's current info, rediscovering it if its address
+    changed; None if it can't be reached (off, unplugged)."""
+    ips = [tv["ip"]]
+    for ip in ips:
+        try:
+            with lg_session({**tv, "ip": ip}) as s:
+                power = s.power()
+        except LGNotPaired as e:
+            print(f"LG TV at {ip}: {e}", flush=True)
+            return {**tv, "ip": ip, "power": "NotPaired"}
+        except OSError:
+            if ip == tv["ip"]:  # moved? look for it once
+                ips += [t["ip"] for t in discover_tvs() if t.get("kind") == "lg"
+                        and t["serial"] == tv["serial"] and t["ip"] != tv["ip"]]
+            continue
+        if ip != tv["ip"]:
+            with lock:
+                fresh = load()
+                if (fresh.get("tv") or {}).get("serial") == tv["serial"]:
+                    fresh["tv"]["ip"] = ip
+                    save(fresh)
+        return {**tv, "ip": ip, "power": power}  # (keeps the key: tv_now/tv_stop reconnect with it)
+    return None
+
+
+def lg_media(tv):
+    try:
+        with lg_session(tv) as s:
+            return s.media_state()
+    except OSError:
+        return None
+
+
+def lg_now(tv):
+    """(app on screen, "play"/"pause"/...) for the parents' "On the TV now"."""
+    try:
+        with lg_session(tv) as s:
+            app = s.foreground_app()
+            state = s.media_state()
+    except OSError:
+        return None, None
+    return LG_APP_NAMES.get(app, app), (None if state == "?" else state)
+
+
+def lg_button(tv, name):
+    with lg_session(tv) as s:
+        s.button(name)
+
+
+def lg_plex_player(cfg, ip, wait=25):
+    """The Plex app on the LG as a Companion player: (its id, a function that
+    sends it a command). Straight to the TV if it listens on a Companion port,
+    otherwise through the Plex server, which relays to players signed in to it."""
+    def sender(base, target, token):
+        def send(command, params):
+            q = urllib.parse.urlencode({**params, "commandID": next(command_ids)})
+            fetch(f"{base}/player/playback/{command}?{q}", timeout=20, headers={
+                **plex_headers(cfg, token), "X-Plex-Target-Client-Identifier": target})
+        return send
+
+    end = time.time() + wait
+    while time.time() < end:
+        for port in (32500, 8324):
+            try:
+                target = companion_id(ip, timeout=2, port=port)
+            except (OSError, ET.ParseError, AttributeError):
+                continue
+            print(f"LG Plex: Companion on port {port}", flush=True)
+            return target, sender(f"http://{ip}:{port}", target, None)
+        for token in (cfg.get("account_token"), cfg["server_token"]):
+            try:
+                clients = plex_json(cfg, f"{cfg['server_url']}/clients", token)["MediaContainer"].get("Server", [])
+            except (OSError, ValueError, KeyError):
+                continue
+            for client in clients:
+                if client.get("address") == ip:
+                    print(f"LG Plex: through the server ({client.get('product')})", flush=True)
+                    return client["machineIdentifier"], sender(cfg["server_url"], client["machineIdentifier"],
+                                                               token)
+        time.sleep(2)
+    return None
+
+
+def lg_start(cfg, item, key, tv):
+    """A pick on the LG: Netflix opens straight to the title; Plex starts over
+    (like on the Roku), the highlighted profile is picked on "Who's watching?",
+    then the title goes to it as a Companion playMedia."""
+    if item.get("kind") == "netflix":
+        try:
+            with lg_session(tv) as s:
+                s.launch(LG_NETFLIX_APP, content_id=f"m=https://www.netflix.com/watch/{key[2:]}&source_type=4")
+        except LGError as e:
+            print(f"LG Netflix: {e}", flush=True)
+            return {"result": "error", "message": "Netflix isn't on the TV."}
+        # (No rewind to the start: the LG doesn't say where playback is.)
+        return {"result": "playing", "message": "It's starting on the TV!"}
+
+    try:
+        with lg_session(tv) as s:
+            s.close_app(LG_PLEX_APP)
+            time.sleep(2)
+            s.launch(LG_PLEX_APP)
+    except LGError as e:
+        print(f"LG Plex launch: {e}", flush=True)
+        return {"result": "plex_closed", "message": "Plex isn't on the TV."}
+    time.sleep(12)  # until "Who's watching?" is up
+    if lg_media(tv) not in ("play", "pause", "buffer"):
+        lg_button(tv, "ENTER")  # the highlighted (last-used) profile: Kids
+    time.sleep(6)  # signing in
+    player = lg_plex_player(cfg, tv["ip"])
+    if not player:
+        return {"result": "plex_closed", "message": "Plex on the TV can't be reached."}
+    send = player[1]
+    params = plex_play_params(cfg, item, key)
+    for attempt in range(2):
+        send("playMedia", params)
+        if wait_for(lambda: lg_media(tv) in ("play", "buffer", "?"), 20):
+            break
+        print("LG: not playing 20s after asking; asking again", flush=True)
+    else:
+        return {"result": "error", "message": "The TV didn't start it."}
+    threading.Thread(target=lg_plex_from_start, args=(tv, send), daemon=True).start()
+    return {"result": "playing", "message": "It's playing on the TV!"}
+
+
+def lg_plex_from_start(tv, send):
+    """Plex can resume despite the reset, and the LG doesn't say where it is,
+    so once it plays, jump to the start (a few seconds in, it's no harm)."""
+    if wait_for(lambda: lg_media(tv) == "play", 40):
+        time.sleep(2)
+        try:
+            send("seekTo", {"type": "video", "offset": 0})
+        except OSError as e:
+            print(f"LG Plex seek to start: {e!r}", flush=True)
+
+
+def lg_start_dance(tv, queue):
+    """The first song in YouTube on the LG. A dance party can't be followed
+    song by song here (the LG gives no position), so YouTube's autoplay
+    carries on after it."""
+    try:
+        with lg_session(tv) as s:
+            s.close_app(LG_YOUTUBE_APP)
+            time.sleep(1.5)
+            s.launch(LG_YOUTUBE_APP, params={"contentTarget": f"https://www.youtube.com/tv?v={queue[0]['id']}"})
+    except LGError as e:
+        print(f"LG YouTube: {e}", flush=True)
+        return {"result": "error", "message": "YouTube isn't on the TV."}
+    # YouTube may open on "Who's watching?": OK picks the last profile, but
+    # never while a video plays (OK = pause). If the TV won't say what's
+    # playing, press it just once, when the picker is usually up.
+    deadline, next_ok, blind = time.time() + 50, time.time() + 14, False
+    while time.time() < deadline:
+        state = lg_media(tv)
+        if state in ("play", "buffer", "pause"):
+            break
+        if state == "?":
+            if not blind and time.time() >= next_ok:
+                lg_button(tv, "ENTER")
+                blind = True
+        elif time.time() >= next_ok:
+            lg_button(tv, "ENTER")
+            next_ok = time.time() + 8
+        time.sleep(1)
+    if len(queue) > 1:
+        print("LG: dance party plays the first song, then YouTube's autoplay", flush=True)
+    return {"result": "playing", "message": "Let's dance!"}
+
+
+def lg_apps(tv):
+    """For --check: paired, and which of the apps we use are on the TV."""
+    with lg_session(tv) as s:
+        apps = s.apps()
+    found = {name: [f"{i} ({t})" for i, t in apps.items() if name.lower() in f"{i} {t}".lower()]
+             for name in ("Plex", "Netflix", "YouTube")}
+    return "paired; " + "; ".join(f"{n}: {', '.join(v) or 'not installed'}" for n, v in found.items())
+
+
+def lg_cli(args):
+    """Tonight's tester (run as tablet-movies):
+         --lg discover            LG TVs on the network
+         --lg pair <serial>       pair (press Accept on the TV) and use it as the TV
+         --lg status              power, app on screen, media state, apps
+         --lg key <NAME>          a remote button (HOME, ENTER, BACK, UP, ...)
+         --lg launch <app> [contentTarget]"""
+    command = args[0] if args else "status"
+    if command == "discover":
+        for tv in discover_tvs():
+            if tv.get("kind") == "lg":
+                print(json.dumps(tv))
+        return 0
+    if command == "pair":
+        tv = next((t for t in discover_tvs() if t.get("kind") == "lg" and t["serial"] == args[1]), None)
+        if not tv:
+            print("not found; try --lg discover")
+            return 1
+        print("Press Accept on the TV now...", flush=True)
+        chosen = {k: tv[k] for k in ("serial", "ip", "name", "location")}
+        chosen.update(kind="lg", client_key=lg_pair(tv["ip"]))
+        with lock:
+            cfg = load()
+            cfg["tv"] = chosen
+            save(cfg)
+        print("paired, and it's now the TV for Movies & TV and Dance")
+        return 0
+    cfg = load()
+    tv = cfg.get("tv") or {}
+    if tv.get("kind") != "lg":
+        print("the chosen TV isn't an LG; pair one first")
+        return 1
+    with lg_session(tv) as s:
+        if command == "key":
+            s.button(args[1])
+        elif command == "launch":
+            print(s.launch(args[1], params={"contentTarget": args[2]} if len(args) > 2 else None))
+        else:
+            print(json.dumps({"power": s.power(), "app": s.foreground_app(), "media": s.media_state(),
+                              "apps": s.apps()}, indent=1))
+    return 0
+
+
 def check():
     """Every step of a play except the final command to the TV (nothing changes on screen)."""
     cfg = load()
@@ -2051,6 +2607,9 @@ def check():
         ("Netflix on the TV", lambda: {True: "yes", False: None, None: "can't tell (app list blocked)"}[
             roku_info(cfg["tv"]["ip"]).get("netflix")]),
     ]
+    if (cfg.get("tv") or {}).get("kind") == "lg":
+        steps = [s for s in steps if s[0] not in ("Plex open on the TV", "Netflix on the TV")]
+        steps.append(("LG TV apps", lambda: lg_apps(cfg["tv"])))
     ok = True
     for name, step in steps:
         try:
@@ -2072,6 +2631,8 @@ def main():
         raise SystemExit("portal PIN set")
     if "--check" in sys.argv:
         raise SystemExit(check())
+    if "--lg" in sys.argv:
+        raise SystemExit(lg_cli(sys.argv[sys.argv.index("--lg") + 1:]))
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     threading.Thread(target=seed_dance, daemon=True).start()
     threading.Thread(target=count_usage, daemon=True).start()

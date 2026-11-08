@@ -3,14 +3,15 @@
      on the TV through YouTube; the parents choose the songs on the Movies & TV web page. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.tabletos.dance"
-    android:versionCode="5"
-    android:versionName="1.3">
+    android:versionCode="6"
+    android:versionName="1.4">
 
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- To see (and open) the kid's own player app on the tablet. -->
     <queries>
         <package android:name="com.google.android.apps.youtube.kids" />
+        <package android:name="org.tabletos.home" />
     </queries>
 
     <!-- Cleartext only to the host bridge on the private Waydroid network. -->

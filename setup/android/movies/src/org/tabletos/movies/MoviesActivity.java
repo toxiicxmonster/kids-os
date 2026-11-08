@@ -425,6 +425,9 @@ public class MoviesActivity extends Activity {
     private boolean start(Intent intent) {
         try {
             startActivity(intent);
+            // Tablet Home covers the screen until it plays, with its home button on top.
+            sendBroadcast(new Intent().setClassName("org.tabletos.home", "org.tabletos.home.PlayerCover")
+                    .putExtra("package", PLEX));
             return true;
         } catch (Exception e) {  // not found, or refused by the kiosk's lock task
             Log.w(TAG, "couldn't open " + intent, e);
@@ -623,16 +626,29 @@ public class MoviesActivity extends Activity {
         call("GET", "/tvs", result -> {
             JSONArray list = result == null ? null : result.optJSONArray("tvs");
             if (list == null || list.length() == 0) {
-                toastLine("No Roku TVs found. Make sure they're on the same Wi-Fi.");
+                toastLine("No Roku or LG TVs found. Make sure the TV is on and on the same network.");
                 return;
             }
             heading("Tap the TV to use:");
             for (int i = 0; i < list.length(); i++) {
                 JSONObject t = list.optJSONObject(i);
-                String label = t.optString("location") + " – " + t.optString("name")
+                boolean lg = "lg".equals(t.optString("kind"));
+                String label = t.optString("location") + " – " + t.optString("name") + (lg ? "  · LG" : "")
                         + ("PowerOn".equals(t.optString("power")) ? "  (on)" : "  (off/standby)");
-                parentList.addView(button(label, v -> call("POST", "/tv/" + t.optString("serial"),
-                        r -> refreshParent())));
+                parentList.addView(button(label, v -> {
+                    if (lg) {
+                        // The first connection asks on the TV; the bridge waits up to a minute.
+                        toastLine("Now press Accept on the TV, with its remote…");
+                    }
+                    call("POST", "/tv/" + t.optString("serial"), r -> {
+                        if (r == null && lg) {
+                            toastLine("The TV wasn't paired. Make sure it's on, choose it again "
+                                    + "and press Accept on the TV.");
+                        } else {
+                            refreshParent();
+                        }
+                    });
+                }));
             }
         });
     }

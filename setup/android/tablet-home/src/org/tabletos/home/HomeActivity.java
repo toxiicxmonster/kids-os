@@ -67,7 +67,7 @@ public class HomeActivity extends Activity {
     private static final String MODE_PROP = "persist.waydroid.tablet_mode";
     static final String PREFS = "apps";
     private static final String KEY_APPROVED = "approved";
-    private static final String KEY_THEME = "theme";  // last known, so the right one shows at once
+    static final String KEY_THEME = "theme";  // last known, so the right one shows at once
     private static final long MODE_POLL_MS = 1500;
 
     private DevicePolicyManager dpm;
@@ -232,7 +232,7 @@ public class HomeActivity extends Activity {
         allowed.add(getPackageName());
         // Movies & TV and Dance open these to play on the tablet (while the TV is
         // paused or not set up), even when they aren't in the carousel themselves.
-        allowed.addAll(PLAYERS);
+        allowed.addAll(PlayerCover.PLAYERS);
         dpm.setLockTaskPackages(admin, allowed.toArray(new String[0]));
         // Keep only the Home button: no recents, notifications, status bar or power menu.
         dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_HOME);
@@ -266,9 +266,6 @@ public class HomeActivity extends Activity {
     private static final Set<String> BUILT_IN = Set.of("org.tabletos.movies", "org.tabletos.dance",
             "org.tabletos.paint", "org.khanacademy.khankids");
     private static final String KEY_SEEN_BUILT_IN = "seen_built_in";
-    /** The player apps our apps hand titles to for watching on the tablet. */
-    private static final Set<String> PLAYERS = Set.of("com.plexapp.android",
-            "com.google.android.apps.youtube.kids");
     /** When the kid last opened an app ("used_" + package): the newest goes first in the carousel. */
     private static final String KEY_USED = "used_";
 
@@ -340,50 +337,23 @@ public class HomeActivity extends Activity {
     /** Apps with their own home button; the bubble would just duplicate it. */
     private static final Set<String> HAS_OWN_HOME_BUTTON = Set.of("org.tabletos.movies", "org.tabletos.dance",
             "org.tabletos.paint");
-    private View bubble;
     private String launchedPkg;
 
     /**
-     * Kid mode: a round home button floating over the app that was just opened
-     * (a system overlay, so it works over any app). Tapping it comes back here.
+     * Kid mode: the floating home button over the app that was just opened
+     * (HomeBubble). Apps with their own home button don't get one; when they
+     * hand a title to Plex or YouTube Kids, PlayerCover puts it up instead.
      */
     private void showHomeBubble() {
-        if (bubble != null || launchedPkg == null || HAS_OWN_HOME_BUTTON.contains(launchedPkg)
-                || !Settings.canDrawOverlays(this)) {
+        if (launchedPkg == null || HAS_OWN_HOME_BUTTON.contains(launchedPkg)) {
             return;
         }
-        TextView home = new TextView(getApplicationContext());
-        home.setText("🏠");
-        home.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
-        home.setGravity(Gravity.CENTER);
-        GradientDrawable circle = new GradientDrawable();
-        circle.setShape(GradientDrawable.OVAL);
-        circle.setColor(Color.WHITE);
-        circle.setStroke(dp(4), Color.rgb(0x0d, 0x47, 0xa1));
-        home.setBackground(circle);
-        home.setAlpha(0.85f);
-        home.setContentDescription("Home");
-        home.setOnClickListener(v -> tapFeedback(v, () -> {
-            Intent back = new Intent(this, HomeActivity.class)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-            startActivity(back);
-        }));
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(dp(64), dp(64),
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT);
-        // Left edge, halfway down: games tend to use the corners for their own buttons.
-        lp.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
-        lp.x = dp(12);
-        getSystemService(WindowManager.class).addView(home, lp);
-        bubble = home;
+        HomeBubble.show(this, v -> tapFeedback(v, () -> HomeBubble.goHome(this)));
     }
 
+    /** Back on screen: the home button (and any player cover) goes. */
     private void hideHomeBubble() {
-        if (bubble != null) {
-            getSystemService(WindowManager.class).removeView(bubble);
-            bubble = null;
-        }
+        PlayerCover.hide(this);
     }
 
     private void launch(String pkg) {

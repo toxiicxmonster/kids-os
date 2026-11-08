@@ -2,14 +2,15 @@
 <!-- Movies: the kid taps a poster and it plays on the TV; the parent sets it up. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.tabletos.movies"
-    android:versionCode="17"
-    android:versionName="1.15">
+    android:versionCode="19"
+    android:versionName="1.17">
 
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- To see (and open) the kid's own player app on the tablet. -->
     <queries>
         <package android:name="com.plexapp.android" />
+        <package android:name="org.tabletos.home" />
     </queries>
 
     <!-- Cleartext only to the host bridge on the private Waydroid network. -->
