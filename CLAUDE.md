@@ -170,6 +170,9 @@ gitignored.)
     that TV fetch only that stream. Pair once: `--lg airplay-pair` (PIN on
     the TV; credentials in `cfg["tv"]["airplay"]`, never in a reply).
     Unpaired, the old Plex-app route is the fallback. Roku is unchanged.
+    A TV's stream asks as "Plex for Android": as Plex Web the transcoder
+    gives HLS MP3 audio (whatever the profile extra says), silent on the LG.
+    The LG ignores pyatv's unicast `hosts=` scan; scan the network.
   - The LG is AirPlay video v2 only: `POST /play` is a 404. What works (as
     macOS does it, cf. pyatv PR #2941): a second SETUP for a remote-control
     stream (type 130, controlType 1), then `POST /command` with
