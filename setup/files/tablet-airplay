@@ -1,0 +1,196 @@
+#!/opt/kidsos-airplay/bin/python3
+"""Kids OS: play a video URL on an LG webOS TV over AirPlay (the bridge's helper).
+
+  tablet-airplay pair <ip>    starts pairing: the TV shows a PIN, type it here;
+                              prints the credentials (keep them secret)
+  tablet-airplay play <ip> <url>
+                              plays the URL; credentials in $TABLET_AIRPLAY_CREDENTIALS.
+                              Prints one JSON line per change ({"state", "position",
+                              "duration"}, finally {"end": "played"|"failed"|"stopped"});
+                              exits when it ends. SIGTERM stops playback (the TV leaves
+                              the player when the connection closes).
+
+LG TVs only do AirPlay video "v2": POST /play is a 404 there. What works (as macOS
+does it): pyatv's usual pair-verify, SETUP, event channel, feedback and RECORD, then
+a SETUP of a remote-control stream (type 130, controlType 1) and POST /command on the
+RTSP connection with the URL queued as insertPlayQueueItem, then actionAtItemEnd and
+setRate. The TV reports back as POST /command on the event channel (a bplist whose
+params.data is the bplist of the report). This patches pyatv internals, so pyatv is
+pinned (stage 36: pyatv 0.18.0 with srptools 1.0.1; srptools 2.0 breaks pairing).
+"""
+import asyncio
+import json
+import os
+import plistlib
+import signal
+import sys
+import uuid
+
+import pyatv
+from pyatv.const import Protocol
+from pyatv.protocols.airplay import player as airplay_player
+from pyatv.protocols.airplay.channels import EventChannel
+from pyatv.protocols.raop.protocols import airplayv2
+from pyatv.support.http import decode_bplist_from_body
+
+REMOTE_CONTROL_STREAM = 130
+VIDEO_CONTROL = 1
+CLIENT_TYPE_UUID = "A6B27562-B43A-4F2D-B75F-82391E250194"
+STARTUP_SECONDS = 60  # no "playing" by then: give up
+NO_TIME = {"flags": 0, "value": 0, "epoch": 0, "timescale": 0}
+
+reports: asyncio.Queue = asyncio.Queue()
+device_id = ""
+
+
+def say(**fields):
+    print(json.dumps(fields), flush=True)
+
+
+def seconds(t):
+    try:
+        return round(t["value"] / t["timescale"], 1) if t.get("timescale") else None
+    except (TypeError, KeyError):
+        return None
+
+
+# The TV's reports arrive on the event channel; pyatv answers them 200 and
+# drops them, so look at each one on the way through.
+_parse_request = EventChannel.parse_request
+
+
+def parse_request(data):
+    request, *rest = _parse_request(data)
+    if request is not None and request.path == "/command" and request.body:
+        try:
+            reports.put_nowait(plistlib.loads(plistlib.loads(bytes(request.body))["params"]["data"]))
+        except (plistlib.InvalidFileException, KeyError, TypeError, ValueError):
+            pass
+    return (request, *rest)
+
+
+EventChannel.parse_request = staticmethod(parse_request)
+
+
+async def play_url(self, timing_server_port, url, position=0.0):
+    """AirPlayV2.play_url for video-v2-only receivers."""
+    await self._setup_base(timing_server_port)
+    await self.start_feedback()
+    await self.rtsp.record()
+    resp = decode_bplist_from_body(await self.rtsp.setup(body={"streams": [{
+        "type": REMOTE_CONTROL_STREAM, "controlType": VIDEO_CONTROL, "channelID": f"{device_id}-RCS-2",
+        "clientUUID": str(uuid.uuid4()).upper(), "clientTypeUUID": CLIENT_TYPE_UUID}]}))
+    stream_id = str(resp["streams"][0]["streamID"])
+
+    async def command(body):
+        return await self.rtsp.exchange("POST", uri="/command", headers={"X-Apple-StreamID": stream_id},
+                                        body={"params": {"data": plistlib.dumps(body, fmt=plistlib.FMT_BINARY)}})
+
+    hls = url.split("?")[0].endswith((".m3u8", ".m3u"))
+    item = {"uuid": str(uuid.uuid4()).upper(), "Content-Location": url, "playbackRestrictions": 0,
+            "referenceRestrictions": 3, "supportsIntegratedTimeline": False,
+            "allowedCommonMediaClientDataKeys": 0, "snapTimeToPausePlayback": False,
+            "clientBundleID": "org.kidsos.bridge", "mediaType": "streaming" if hls else "file"}
+    if hls:  # (a playlist sent as "file" stays in "loading")
+        item.update(timeToPausePlayback=NO_TIME, timeToPauseBuffering=NO_TIME)
+    if not hls or position > 0:
+        item["Start-Position"] = {"flags": 1, "value": int(position * 1e9), "epoch": 0, "timescale": 10**9}
+    await command({"type": "insertPlayQueueItem", "item": item})
+    await command({"type": "setProperty", "property": "actionAtItemEnd", "value": 1})  # pause at the end
+    return await command({"type": "setRate", "rate": 1.0})
+
+
+async def wait_for_end(self):
+    """AirPlayPlayer._wait_for_media_to_end: follow the TV's reports."""
+    loop = asyncio.get_running_loop()
+    started, last = False, None
+    deadline = loop.time() + STARTUP_SECONDS
+    while self.rtsp.connection.transport is not None:
+        if not started and loop.time() > deadline:
+            say(end="failed", reason="never started")
+            return
+        try:
+            report = await asyncio.wait_for(reports.get(), 1)
+        except asyncio.TimeoutError:
+            continue
+        kind, name = report.get("type"), report.get("name")
+        if kind == "notification" and name == "itemPlayedToEnd":
+            say(end="played")
+            return
+        if kind == "notification" and name == "itemFailedToPlayToEnd":
+            say(end="failed", reason=str(report.get("params", ""))[:200])
+            return
+        if kind == "playbackState":
+            if name == "stopped":
+                say(end="played" if started else "failed", reason="stopped")
+                return
+            params = report.get("params") or {}
+            now = (name, seconds(params.get("position") or {}), seconds(params.get("duration") or {}))
+            started |= name == "playing"
+            if now != last:
+                say(state=now[0], position=now[1], duration=now[2])
+                last = now
+    say(end="stopped", reason="connection closed")
+
+
+airplayv2.AirPlayV2.play_url = play_url
+airplay_player.AirPlayPlayer._wait_for_media_to_end = wait_for_end
+
+
+async def find(ip):
+    loop = asyncio.get_running_loop()
+    found = await pyatv.scan(loop, hosts=[ip], timeout=8)
+    if not found or not found[0].get_service(Protocol.AirPlay):
+        raise SystemExit(f"no AirPlay TV at {ip}")
+    return found[0]
+
+
+async def pair(ip):
+    conf = await find(ip)
+    pairing = await pyatv.pair(conf, Protocol.AirPlay, asyncio.get_running_loop())
+    try:
+        await pairing.begin()
+        print("Type the PIN shown on the TV: ", end="", file=sys.stderr, flush=True)
+        pin = (await asyncio.get_running_loop().run_in_executor(None, sys.stdin.readline)).strip()
+        pairing.pin(pin)
+        await pairing.finish()
+        if not pairing.has_paired:
+            raise SystemExit("pairing failed")
+        print(pairing.service.credentials, flush=True)
+    finally:
+        await pairing.close()
+
+
+async def play(ip, url):
+    global device_id
+    credentials = os.environ.get("TABLET_AIRPLAY_CREDENTIALS")
+    if not credentials:
+        raise SystemExit("TABLET_AIRPLAY_CREDENTIALS isn't set")
+    conf = await find(ip)
+    device_id = conf.get_service(Protocol.AirPlay).properties.get("deviceid", "")
+    conf.set_credentials(Protocol.AirPlay, credentials)
+    atv = await pyatv.connect(conf, asyncio.get_running_loop())
+    task = asyncio.current_task()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
+    try:
+        await atv.stream.play_url(url)
+    except asyncio.CancelledError:
+        say(end="stopped", reason="asked to stop")
+    except Exception as e:  # the bridge reads the reason
+        say(end="failed", reason=repr(e)[:200])
+    finally:
+        atv.close()
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) == 2 and args[0] == "pair":
+        asyncio.run(pair(args[1]))
+    elif len(args) == 3 and args[0] == "play":
+        asyncio.run(play(args[1], args[2]))
+    else:
+        raise SystemExit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

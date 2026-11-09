@@ -130,6 +130,7 @@ YOUTUBE_ROKU_APP = "837"
 # its own venv) only lists the channel's videos and reads titles and lengths;
 # nothing is downloaded.
 YTDLP = os.environ.get("TABLET_YTDLP", "/opt/kidsos-ytdlp/bin/yt-dlp")
+AIRPLAY = os.environ.get("TABLET_AIRPLAY", "/usr/local/sbin/tablet-airplay")  # Plex on an LG
 DANCE_CHANNEL = "https://www.youtube.com/@dannygo/videos"
 DANCE_STARTERS = ["QHPi3tVbq6U", "etbS9iiWLl4", "ufnagMewn4E"]  # Swipe & Scan, Skeleton Shake, Spiders
 DANCE_PARTY_MAX = 6
@@ -329,16 +330,26 @@ def play_local(cfg, key=None, song=None):
 # (offset 0), sized for the tablet's screen.
 
 STREAM_MAX_BITRATE = 3000  # kbps: plenty for 1024x768, light on the server
-streams = {}  # session id -> {"key", "at"}
+TV_STREAM_SIZE, TV_STREAM_BITRATE = (1920, 1080), 8000  # the same stream sent to an LG over AirPlay
+streams = {}  # session id -> {"key", "at", and for a TV: "size", "bitrate", "client" (its IP)}
 
 
-def stream_start(key):
+def stream_start(key, size=None, bitrate=None, client=None):
     sid = uuid.uuid4().hex
     now = time.time()
     for old in [s for s, v in streams.items() if now - v["at"] > 6 * 3600]:
         streams.pop(old, None)
-    streams[sid] = {"key": str(int(key)), "at": now}
+    streams[sid] = {"key": str(int(key)), "at": now, "size": size, "bitrate": bitrate, "client": client}
     return sid
+
+
+def tv_stream_request(method, path, client):
+    """A TV fetching the stream it was given (only that TV, only that stream)."""
+    parts = path.split("/")  # "", "api", "hls", <sid>, ...
+    if method != "GET" or len(parts) < 5 or parts[1:3] != ["api", "hls"]:
+        return False
+    stream = streams.get(parts[3])
+    return bool(stream and stream.get("client") == str(client))
 
 
 def stream_get(cfg, sid, rest):
@@ -350,11 +361,11 @@ def stream_get(cfg, sid, rest):
     # Just the token (the bridge's usual JSON Accept header gets a 400 from the transcoder).
     headers = {"X-Plex-Token": cfg["server_token"]}
     if rest == "start.m3u8":
-        w, h = (tablet_screen() or (1024, 768))
+        w, h = stream.get("size") or tablet_screen() or (1024, 768)
         q = {"path": f"/library/metadata/{stream['key']}", "mediaIndex": 0, "partIndex": 0, "protocol": "hls",
              "offset": 0, "fastSeek": 1, "directPlay": 0, "directStream": 1, "directStreamAudio": 0,
              "subtitleSize": 100, "audioBoost": 100, "location": "lan", "session": sid, "copyts": 1,
-             "videoResolution": f"{w}x{h}", "maxVideoBitrate": STREAM_MAX_BITRATE,
+             "videoResolution": f"{w}x{h}", "maxVideoBitrate": stream.get("bitrate") or STREAM_MAX_BITRATE,
              "X-Plex-Client-Profile-Extra": "add-transcode-target(type=videoProfile&context=streaming"
                                             "&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac)",
              # The transcoder wants who's asking in the query, not only in headers.
@@ -1047,9 +1058,16 @@ def tv_now():
     tv = find_tv(cfg) if cfg.get("tv") else None
     out = {"tv": None, "last": dict(last_play) or None}
     if tv and tv.get("kind") == "lg":
-        app, state = lg_now(tv) if tv["power"] == "PowerOn" else (None, None)
+        with airplay_lock:
+            airplay = dict(airplay_now)
+        if airplay.get("state"):  # a Plex title we sent over AirPlay
+            app, state = "Movies & TV", "play" if airplay["state"] == "playing" else airplay["state"]
+            position = int(airplay.get("position") or 0)
+        else:
+            app, state = lg_now(tv) if tv["power"] == "PowerOn" else (None, None)
+            position = 0
         out["tv"] = {"name": tv.get("location") or tv.get("name"), "power": tv["power"], "app": app,
-                     "state": state, "position": 0}
+                     "state": state, "position": position}
     elif tv:
         app = None
         try:
@@ -1076,6 +1094,7 @@ def tv_stop():
     if not tv or tv["power"] != "PowerOn":
         return {"ok": False, "message": "The TV is off."}
     if tv.get("kind") == "lg":
+        airplay_stop()
         with lg_session(tv) as s:
             s.button("HOME")
     else:
@@ -1814,7 +1833,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:  # report, don't crash the server
                 print(f"error on {method} {self.path}: {e!r}", flush=True)
                 return self.reply(500, {"error": str(e)})
-        if not any(client in net for net in ALLOWED_CLIENTS):
+        if not (any(client in net for net in ALLOWED_CLIENTS) or tv_stream_request(method, path.path, client)):
             return self.reply(403, {"error": "forbidden"})
         parts = [p for p in path.path.split("/") if p][1:]  # drop "api"
         query = urllib.parse.parse_qs(path.query)
@@ -1859,9 +1878,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     chosen.update(kind="lg", client_key=lg_pair(tv["ip"]))
                 with lock:
                     cfg = load()
+                    keep_airplay(cfg, chosen)
                     cfg["tv"] = chosen
                     save(cfg)
-                return self.reply(200, {"tv": {k: v for k, v in chosen.items() if k != "client_key"}})
+                return self.reply(200, {"tv": {k: v for k, v in chosen.items() if k not in TV_SECRETS}})
             if route in (("GET", "hls"), ("POST", "hls-stop")):
                 # The player's stream (slow Plex round trips: outside the config lock).
                 with lock:
@@ -1949,7 +1969,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == ("GET", "setup"):
             return 200, {"linked": "account_token" in cfg, "account": cfg.get("account"),
                          "profile": cfg.get("profile"), "server": cfg.get("server_name"),
-                         "tv": {k: v for k, v in cfg["tv"].items() if k != "client_key"} if cfg.get("tv") else None,
+                         "tv": {k: v for k, v in cfg["tv"].items() if k not in TV_SECRETS} if cfg.get("tv") else None,
                          "movies": len(cfg["movies"]),
                          "portal_url": f"http://{socket.gethostname()}.local:{LISTEN[1]}/",
                          "portal_pin_set": "portal_pin" in cfg}
@@ -2557,7 +2577,11 @@ def lg_start(cfg, item, key, tv):
             return {"result": "error", "message": "Netflix isn't on the TV."}
         # (No rewind to the start: the LG doesn't say where playback is.)
         return {"result": "playing", "message": "It's starting on the TV!"}
+    if tv.get("airplay"):
+        return airplay_start(cfg, item, key, tv)
 
+    # Not paired for AirPlay: the TV's own Plex app (its webOS app takes no remote
+    # plays as of 2026-11, so this only works if a Plex update brings that back).
     try:
         with lg_session(tv) as s:
             s.close_app(LG_PLEX_APP)
@@ -2595,6 +2619,115 @@ def lg_plex_from_start(tv, send):
             send("seekTo", {"type": "video", "offset": 0})
         except OSError as e:
             print(f"LG Plex seek to start: {e!r}", flush=True)
+
+
+# ---- Plex on the LG over AirPlay ------------------------------------------------------
+#
+# The LG's Plex app can't be told to play anything, but the TV plays a link sent
+# over AirPlay: the same stream as Movies & TV's own player (the Plex transcoder
+# through the bridge, as the kid's profile, from the start), sized for the TV.
+# tablet-airplay (its own pyatv venv) holds the AirPlay connection for as long as
+# it plays; ending it stops playback. Pairing (a PIN on the TV) is done once with
+# --lg airplay-pair; the credentials stay in cfg["tv"]["airplay"].
+
+TV_SECRETS = ("client_key", "airplay")  # never in a reply
+
+
+def keep_airplay(cfg, chosen):
+    """Choosing the same TV again keeps its AirPlay pairing."""
+    old = cfg.get("tv") or {}
+    if old.get("airplay") and old.get("serial") == chosen.get("serial"):
+        chosen["airplay"] = old["airplay"]
+
+
+airplay_lock = threading.Lock()
+airplay_now = {}  # the playing helper: "proc", "sid", "state", "position", "duration", "title"
+
+
+def local_ip_toward(ip):
+    """This box's address as the TV sees it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect((ip, 9))
+        return s.getsockname()[0]
+
+
+def airplay_stop():
+    with airplay_lock:
+        proc = airplay_now.get("proc")
+    if proc and proc.poll() is None:
+        proc.terminate()  # closes the connection, which stops the TV's player
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    return bool(proc)
+
+
+def airplay_follow(cfg, proc, sid, started):
+    """Reads the helper's reports until it ends, then stops the transcode."""
+    for line in proc.stdout:
+        try:
+            report = json.loads(line)
+        except ValueError:
+            continue
+        with airplay_lock:
+            if airplay_now.get("proc") is proc:
+                airplay_now.update({k: report[k] for k in ("state", "position", "duration") if k in report})
+        if report.get("state") == "playing":
+            started.set()
+        if "end" in report:
+            print(f"AirPlay: {report['end']} ({report.get('reason', '')})", flush=True)
+    proc.wait()
+    started.set()  # (a start that failed stops waiting too)
+    stream_stop(cfg, sid)
+    with airplay_lock:
+        if airplay_now.get("proc") is proc:
+            airplay_now.clear()
+
+
+def airplay_start(cfg, item, key, tv):
+    airplay_stop()  # one thing on the TV at a time
+    play_key = pick_episode(cfg, key) if item.get("kind") == "show" else key
+    sid = stream_start(play_key, size=TV_STREAM_SIZE, bitrate=TV_STREAM_BITRATE, client=tv["ip"])
+    url = f"http://{local_ip_toward(tv['ip'])}:{LISTEN[1]}/api/hls/{sid}/start.m3u8"
+    try:
+        proc = subprocess.Popen([AIRPLAY, "play", tv["ip"], url], stdout=subprocess.PIPE, text=True,
+                                env={**os.environ, "TABLET_AIRPLAY_CREDENTIALS": tv["airplay"]})
+    except OSError as e:
+        print(f"AirPlay: {e!r}", flush=True)
+        stream_stop(cfg, sid)
+        return {"result": "error", "message": "The TV can't be reached."}
+    started = threading.Event()
+    with airplay_lock:
+        airplay_now.clear()
+        airplay_now.update(proc=proc, sid=sid, title=item.get("title"), state="loading")
+    threading.Thread(target=airplay_follow, args=(cfg, proc, sid, started), daemon=True).start()
+    started.wait(60)
+    with airplay_lock:
+        playing = airplay_now.get("proc") is proc and airplay_now.get("state") == "playing"
+    if not playing:
+        airplay_stop()
+        return {"result": "error", "message": "The TV didn't start it."}
+    return {"result": "playing", "message": "It's playing on the TV!"}
+
+
+def airplay_pair_cli():
+    """--lg airplay-pair: a PIN on the TV, typed here; keeps the credentials."""
+    cfg = load()
+    tv = cfg.get("tv") or {}
+    if tv.get("kind") != "lg":
+        print("the chosen TV isn't an LG; pair one first")
+        return 1
+    out = subprocess.run([AIRPLAY, "pair", tv["ip"]], stdout=subprocess.PIPE, text=True)
+    credentials = out.stdout.strip()
+    if out.returncode or not credentials:
+        return out.returncode or 1
+    with lock:
+        cfg = load()
+        cfg["tv"]["airplay"] = credentials
+        save(cfg)
+    print("paired: Plex titles now play on the LG over AirPlay")
+    return 0
 
 
 def lg_start_dance(tv, queue):
@@ -2645,8 +2778,11 @@ def lg_cli(args):
          --lg pair <serial>       pair (press Accept on the TV) and use it as the TV
          --lg status              power, app on screen, media state, apps
          --lg key <NAME>          a remote button (HOME, ENTER, BACK, UP, ...)
-         --lg launch <app> [contentTarget]"""
+         --lg launch <app> [contentTarget]
+         --lg airplay-pair        pair over AirPlay too (type the PIN the TV shows), for Plex"""
     command = args[0] if args else "status"
+    if command == "airplay-pair":
+        return airplay_pair_cli()
     if command == "discover":
         for tv in discover_tvs():
             if tv.get("kind") == "lg":
@@ -2662,6 +2798,7 @@ def lg_cli(args):
         chosen.update(kind="lg", client_key=lg_pair(tv["ip"]))
         with lock:
             cfg = load()
+            keep_airplay(cfg, chosen)
             cfg["tv"] = chosen
             save(cfg)
         print("paired, and it's now the TV for Movies & TV and Dance")
@@ -2707,6 +2844,8 @@ def check():
     if (cfg.get("tv") or {}).get("kind") == "lg":
         steps = [s for s in steps if s[0] not in ("Plex open on the TV", "Netflix on the TV")]
         steps.append(("LG TV apps", lambda: lg_apps(cfg["tv"])))
+        steps.append(("Plex on the LG", lambda: "over AirPlay" if cfg["tv"].get("airplay") else
+                      "not paired over AirPlay (--lg airplay-pair); falls back to the TV's Plex app"))
     ok = True
     for name, step in steps:
         try:

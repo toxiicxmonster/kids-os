@@ -35,6 +35,12 @@ EOF
 systemctl daemon-reload
 systemctl enable --now kidsos-ytdlp-update.timer
 
+# Plex on an LG TV goes over AirPlay (tablet-airplay, run by the bridge). Pinned:
+# tablet-airplay patches pyatv internals, and srptools 2.0 breaks pyatv's pairing.
+[[ -x /opt/kidsos-airplay/bin/python3 ]] || python3 -m venv /opt/kidsos-airplay
+/opt/kidsos-airplay/bin/pip install -q "pyatv==0.18.0" "srptools==1.0.1"
+install -m 755 "$TABLET_DIR/files/tablet-airplay" /usr/local/sbin/tablet-airplay
+
 id tablet-movies &>/dev/null || adduser --system --group --home /var/lib/tablet-movies --no-create-home tablet-movies
 install -d -m 700 -o tablet-movies -g tablet-movies /var/lib/tablet-movies
 install -m 755 "$TABLET_DIR/files/tablet-movies-bridge" /usr/local/sbin/tablet-movies-bridge

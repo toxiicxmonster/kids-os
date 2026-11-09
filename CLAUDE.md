@@ -157,5 +157,22 @@ gitignored.)
   (`/clients` by IP), then seekTo 0. Buttons go over the pointer socket.
   Play state is `com.webos.media/getForegroundAppInfo`; the LG gives no
   position, so there's no Netflix rewind and a dance party plays only its
-  first song. Tested only against a fake TV (2026-11-08); `--lg` is the
-  on-box tester.
+  first song. `--lg` is the on-box tester. On a real LG (NU710BAUA,
+  2026-11-09): pairing, buttons, Netflix and YouTube work; **Plex doesn't**.
+  Its webOS app has no Companion port, no GDM reply, isn't in the server's
+  `/clients` and has no remote-control setting; the phone app casts to it
+  only over **AirPlay** (the TV's foreground app is `airplay`; Accept + code
+  once per device). ENTER 12 s after launch came before "Who's watching?".
+  - **So Plex on an LG goes over AirPlay** (`files/tablet-airplay`, venv
+    `/opt/kidsos-airplay`, pinned pyatv 0.18.0 + srptools 1.0.1: 2.0 breaks
+    pairing). The bridge sends the TV the same HLS stream as the tablet's
+    player (1080p, 8 Mbps, from the start, the kid's profile) and lets only
+    that TV fetch only that stream. Pair once: `--lg airplay-pair` (PIN on
+    the TV; credentials in `cfg["tv"]["airplay"]`, never in a reply).
+    Unpaired, the old Plex-app route is the fallback. Roku is unchanged.
+  - The LG is AirPlay video v2 only: `POST /play` is a 404. What works (as
+    macOS does it, cf. pyatv PR #2941): a second SETUP for a remote-control
+    stream (type 130, controlType 1), then `POST /command` with
+    `insertPlayQueueItem` (mediaType "streaming" for HLS), `actionAtItemEnd`,
+    `setRate`; reports come back as `/command` on the event channel.
+    Closing the connection stops playback (that's Stop).
