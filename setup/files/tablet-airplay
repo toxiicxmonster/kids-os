@@ -138,11 +138,14 @@ airplay_player.AirPlayPlayer._wait_for_media_to_end = wait_for_end
 
 
 async def find(ip):
+    """The TV's AirPlay service. A network-wide scan: the LG doesn't answer
+    pyatv's unicast (hosts=) scan."""
     loop = asyncio.get_running_loop()
-    found = await pyatv.scan(loop, hosts=[ip], timeout=8)
-    if not found or not found[0].get_service(Protocol.AirPlay):
-        raise SystemExit(f"no AirPlay TV at {ip}")
-    return found[0]
+    for _ in range(2):
+        for conf in await pyatv.scan(loop, timeout=5, protocol=Protocol.AirPlay):
+            if str(conf.address) == ip and conf.get_service(Protocol.AirPlay):
+                return conf
+    raise SystemExit(f"no AirPlay TV at {ip}")
 
 
 async def pair(ip):
