@@ -372,6 +372,10 @@ def stream_get(cfg, sid, rest):
              "X-Plex-Session-Identifier": sid, "X-Plex-Client-Identifier": cfg["client_id"],
              "X-Plex-Product": "Plex Web", "X-Plex-Platform": "Chrome", "X-Plex-Device": "Android",
              "X-Plex-Token": cfg["server_token"]}
+        if stream.get("client"):
+            # For a TV (AirPlay): Plex's web profile makes HLS audio MP3, which the
+            # LG plays silent; as Plex for Android it's AAC stereo.
+            q.update({"X-Plex-Product": "Plex for Android", "X-Plex-Platform": "Android"})
         qs = urllib.parse.urlencode(q)
         # The server only starts a stream it has first been asked to decide on
         # (without this, start.m3u8 is a bare 400).
