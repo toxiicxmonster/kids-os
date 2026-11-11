@@ -47,7 +47,8 @@ import org.json.JSONObject;
  * Made for a 3-year-old: a "Here it comes!" screen in their theme until the
  * picture is moving; then only the video, the big home button, and one big
  * pause/play button that shows up on a tap and hides again. No seek bar, no
- * menus. When it ends (or fails), it's back to the posters.
+ * menus. At the end of a show's episode the next one follows (while the kid
+ * may still watch); when a movie ends (or fails), it's back to the posters.
  *
  * Not a VideoView: that releases its MediaPlayer on the UI thread when the
  * picture goes away (home, the moon, screen sleep), and Waydroid's software
@@ -247,7 +248,7 @@ public class PlayerActivity extends Activity {
                 }));
                 p.mp.setOnCompletionListener(m -> ui.post(() -> {
                     if (pb == p) {
-                        finish();
+                        nextOrFinish();
                     }
                 }));
                 p.mp.setOnErrorListener((m, what, extra) -> {
@@ -295,6 +296,49 @@ public class PlayerActivity extends Activity {
         });
         ui.removeCallbacks(giveUp);
         ui.postDelayed(giveUp, GIVE_UP_MS);
+    }
+
+    /** The end: a show goes on to its next episode (the bridge decides); otherwise back to the posters. */
+    private void nextOrFinish() {
+        Playback p = pb;
+        pb = null;
+        if (p != null) {
+            close(p);
+        }
+        ui.removeCallbacks(giveUp);
+        pauseButton.setVisibility(View.GONE);
+        String ask = api + "/hls-next/" + sessionId();
+        new Thread(() -> {
+            String next = null;
+            try {
+                JSONObject answer = new JSONObject(http("POST", ask));
+                if ("ok".equals(answer.optString("result"))) {
+                    next = answer.getString("stream");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "asking for the next episode", e);
+            }
+            String n = next;
+            ui.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                if (n == null) {
+                    finish();
+                    return;
+                }
+                stream = api + "/" + n;
+                showCover("Here comes the next one! 🎬");
+                open();
+            });
+        }).start();
+    }
+
+    /** The bridge's session id in the stream URL (…/api/hls/<id>/start.m3u8). */
+    private String sessionId() {
+        java.util.List<String> segments = Uri.parse(stream).getPathSegments();
+        int hls = segments.indexOf("hls");
+        return hls >= 0 && hls + 1 < segments.size() ? segments.get(hls + 1) : "";
     }
 
     /** Releases a Playback on its own thread; if that never finishes, the decoder is stuck. */
@@ -459,8 +503,7 @@ public class PlayerActivity extends Activity {
             close(p);
         }
         // Tell the bridge, so the Plex server stops converting.
-        String sid = Uri.parse(stream).getPathSegments().size() > 2 ? Uri.parse(stream).getPathSegments().get(2) : "";
-        String stop = api + "/hls-stop/" + sid;
+        String stop = api + "/hls-stop/" + sessionId();
         new Thread(() -> {
             try {
                 http("POST", stop);

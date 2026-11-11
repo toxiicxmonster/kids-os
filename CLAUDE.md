@@ -50,8 +50,9 @@ gitignored.)
   the tablet. `POST /api/play-local/<key>` / `dance-local/<id>` check tablet
   time and the list. Netflix titles are dimmed (TV only).
   - **Plex** plays in Movies & TV's own `PlayerActivity` (themed "Here it
-    comes!" until the first frame, big 🏠 and ⏸/▶, no seek bar; back to the
-    posters at the end). The bridge streams it: `/api/hls/<session>/…` passes
+    comes!" until the first frame, big 🏠 and ⏸/▶, no seek bar; a show goes on
+    to its next episode in order via `POST /api/hls-next/<session>`, while
+    tablet time and the list allow; a movie goes back to the posters). The bridge streams it: `/api/hls/<session>/…` passes
     each HLS request to the server's universal transcoder as the kid's profile
     (offset 0, screen-sized, ≤3 Mbps h264/aac), so no Plex token reaches
     Android. The transcoder answers `start.m3u8` with a bare 400 unless
@@ -192,4 +193,7 @@ gitignored.)
     stream (type 130, controlType 1), then `POST /command` with
     `insertPlayQueueItem` (mediaType "streaming" for HLS), `actionAtItemEnd`,
     `setRate`; reports come back as `/command` on the event channel.
-    Closing the connection stops playback (that's Stop).
+    Closing the connection stops playback (that's Stop). At the end of a
+    show's episode (`itemPlayedToEnd`, or "stopped" within 15 s of the end)
+    the bridge sends the next one, unless there was a newer pick, a pause or
+    the kid's time ran out. On a Roku, Plex's own app autoplays the next one.

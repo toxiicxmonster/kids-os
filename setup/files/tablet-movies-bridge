@@ -313,10 +313,30 @@ def play_local(cfg, key=None, song=None):
             return {"result": "tv_only", "message": "That one only plays on the TV."}
         play_key = pick_episode(cfg, key) if kind == "show" else key
         title = item["title"]
-        out = {"stream": f"hls/{stream_start(play_key)}/start.m3u8", "title": title, "kind": kind}
+        sid = stream_start(play_key, show=key if kind == "show" else None)
+        out = {"stream": f"hls/{sid}/start.m3u8", "title": title, "kind": kind}
     if kid:
         add_history(kid, kind, title)
     return {"result": "ok", **out}
+
+
+def stream_next(cfg, sid):
+    """The tablet's player came to the end of an episode: a stream of the
+    show's next one, while the kid may still watch here; else "done" (back to
+    the posters)."""
+    stream = streams.get(sid)
+    show = stream and stream.get("show")
+    if not show:
+        return {"result": "done"}
+    kid = cfg.kid if isinstance(cfg, KidView) else None
+    if kid and not kid_allowed(cfg.root, kid)[0]:
+        return {"result": "sleeping"}
+    if not tablet_mode(cfg) or not any(m["key"] == show for m in cfg.get("movies", [])):
+        return {"result": "done"}
+    episode = next_episode(cfg, show, stream["key"])
+    stream_stop(cfg, sid)
+    print(f"next episode of {show} on the tablet: {episode}", flush=True)
+    return {"result": "ok", "stream": f"hls/{stream_start(episode, show=show)}/start.m3u8"}
 
 
 # ---- Movies & TV's own player: Plex streams through the bridge ---------------------
@@ -331,15 +351,17 @@ def play_local(cfg, key=None, song=None):
 
 STREAM_MAX_BITRATE = 3000  # kbps: plenty for 1024x768, light on the server
 TV_STREAM_SIZE, TV_STREAM_BITRATE = (1920, 1080), 8000  # the same stream sent to an LG over AirPlay
-streams = {}  # session id -> {"key", "at", and for a TV: "size", "bitrate", "client" (its IP)}
+streams = {}  # session id -> {"key", "at", "show" (a show's key, for its next episode),
+#                               and for a TV: "size", "bitrate", "client" (its IP)}
 
 
-def stream_start(key, size=None, bitrate=None, client=None):
+def stream_start(key, size=None, bitrate=None, client=None, show=None):
     sid = uuid.uuid4().hex
     now = time.time()
     for old in [s for s, v in streams.items() if now - v["at"] > 6 * 3600]:
         streams.pop(old, None)
-    streams[sid] = {"key": str(int(key)), "at": now, "size": size, "bitrate": bitrate, "client": client}
+    streams[sid] = {"key": str(int(key)), "at": now, "size": size, "bitrate": bitrate, "client": client,
+                    "show": show}
     return sid
 
 
@@ -642,13 +664,27 @@ def library(cfg, query):
 last_episode = {}  # show key -> episode played last time, to avoid an instant repeat
 
 
-def pick_episode(cfg, show_key):
-    """A random episode of the show (not the same one as last time, if there's a choice)."""
+def show_episodes(cfg, show_key):
+    """The show's episode keys, in order (season by season)."""
     episodes = plex_json(cfg, f"{cfg['server_url']}/library/metadata/{int(show_key)}/allLeaves",
                          cfg["server_token"])["MediaContainer"].get("Metadata", [])
     if not episodes:
         raise RuntimeError("that show has no episodes the profile can see")
-    keys = [e["ratingKey"] for e in episodes]
+    return [str(e["ratingKey"]) for e in episodes]
+
+
+def next_episode(cfg, show_key, episode_key):
+    """The episode after that one (after the last: the first), for autoplay."""
+    keys = show_episodes(cfg, show_key)
+    i = keys.index(str(episode_key)) if str(episode_key) in keys else -1
+    episode = keys[(i + 1) % len(keys)]
+    last_episode[show_key] = episode
+    return episode
+
+
+def pick_episode(cfg, show_key):
+    """A random episode of the show (not the same one as last time, if there's a choice)."""
+    keys = show_episodes(cfg, show_key)
     choices = [k for k in keys if k != last_episode.get(show_key)] or keys
     episode = random.choice(choices)
     last_episode[show_key] = episode
@@ -1887,7 +1923,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                           ("POST", "theme"), ("GET", "dance"), ("GET", "dance-thumb"), ("POST", "dance-play"),
                           ("GET", "allowed"), ("POST", "activity"), ("GET", "coloring"),
                           ("GET", "coloring-page"), ("POST", "play-local"), ("POST", "dance-local"),
-                          ("GET", "hls"), ("POST", "hls-stop"), ("POST", "android-fix"),
+                          ("GET", "hls"), ("POST", "hls-stop"), ("POST", "hls-next"),
+                          ("POST", "android-fix"),
                           ("GET", "android-fix")}
             if route not in kid_routes and not (client.is_loopback or parent_on_desktop()):
                 return self.reply(403, {"error": "parent_only"})
@@ -1941,6 +1978,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     stream_stop(cfg, sid)
                     return self.reply(200, {"ok": True})
                 return self.reply(200, *stream_get(cfg, sid, "/".join(parts[2:])))
+            if route == ("POST", "hls-next"):
+                # The next episode (Plex round trips, so outside the config lock).
+                with lock:
+                    cfg = view(load())
+                return self.reply(200, stream_next(cfg, parts[1] if len(parts) > 1 else ""))
             if route in (("POST", "play-local"), ("POST", "dance-local")):
                 # Plex round trips (episode, progress), so outside the config lock.
                 with lock:
@@ -2714,7 +2756,9 @@ def airplay_stop():
 
 
 def airplay_follow(cfg, proc, sid, started):
-    """Reads the helper's reports until it ends, then stops the transcode."""
+    """Reads the helper's reports until it ends, then stops the transcode; at
+    the end of a show's episode, the next one follows."""
+    ended, position, duration = None, 0, 0
     for line in proc.stdout:
         try:
             report = json.loads(line)
@@ -2723,21 +2767,56 @@ def airplay_follow(cfg, proc, sid, started):
         with airplay_lock:
             if airplay_now.get("proc") is proc:
                 airplay_now.update({k: report[k] for k in ("state", "position", "duration") if k in report})
+        position = report.get("position") or position
+        duration = report.get("duration") or duration
         if report.get("state") == "playing":
             started.set()
         if "end" in report:
+            ended = report
             print(f"AirPlay: {report['end']} ({report.get('reason', '')})", flush=True)
     proc.wait()
     started.set()  # (a start that failed stops waiting too)
     stream_stop(cfg, sid)
     with airplay_lock:
-        if airplay_now.get("proc") is proc:
+        mine = airplay_now.get("proc") is proc
+        playing = dict(airplay_now) if mine else {}
+        if mine:
             airplay_now.clear()
+    # Played to the end ("stopped" counts only right at the end: otherwise someone stopped it).
+    finished = bool(ended and ended["end"] == "played"
+                    and (ended.get("reason") != "stopped" or (duration and duration - position < 15)))
+    if finished and playing.get("show"):
+        threading.Thread(target=airplay_next, args=(playing,), daemon=True).start()
 
 
-def airplay_start(cfg, item, key, tv):
+def airplay_next(playing):
+    """The show's next episode on the TV, unless something else was picked
+    since, movie time was paused, or the kid's tablet time is up."""
+    try:
+        with lock:
+            root = load()
+        kid = playing.get("kid")
+        cfg = for_kid(root, kid) if kid else root
+        tv = cfg.get("tv") or {}
+        if generation != playing.get("generation") or paused_until(cfg) is not None or not tv.get("airplay"):
+            return
+        if kid and not kid_allowed(root, kid)[0]:
+            return
+        show = playing["show"]
+        item = next((m for m in cfg.get("movies", []) if m["key"] == show), None)
+        if not item:
+            return
+        episode = next_episode(cfg, show, playing["episode"])
+        print(f"AirPlay: next episode of {item.get('title')}: {episode}", flush=True)
+        airplay_start(cfg, item, show, tv, episode=episode)
+    except Exception as e:  # report, don't let the thread die quietly
+        print(f"AirPlay next episode: {e!r}", flush=True)
+
+
+def airplay_start(cfg, item, key, tv, episode=None):
     airplay_stop()  # one thing on the TV at a time
-    play_key = pick_episode(cfg, key) if item.get("kind") == "show" else key
+    show = key if item.get("kind") == "show" else None
+    play_key = episode or (pick_episode(cfg, key) if show else key)
     sid = stream_start(play_key, size=TV_STREAM_SIZE, bitrate=TV_STREAM_BITRATE, client=tv["ip"])
     url = f"http://{local_ip_toward(tv['ip'])}:{LISTEN[1]}/api/hls/{sid}/start.m3u8"
     try:
@@ -2750,7 +2829,9 @@ def airplay_start(cfg, item, key, tv):
     started = threading.Event()
     with airplay_lock:
         airplay_now.clear()
-        airplay_now.update(proc=proc, sid=sid, title=item.get("title"), state="loading")
+        airplay_now.update(proc=proc, sid=sid, title=item.get("title"), state="loading", show=show,
+                           episode=play_key, generation=generation,
+                           kid=cfg.kid if isinstance(cfg, KidView) else None)
     threading.Thread(target=airplay_follow, args=(cfg, proc, sid, started), daemon=True).start()
     started.wait(60)
     with airplay_lock:
