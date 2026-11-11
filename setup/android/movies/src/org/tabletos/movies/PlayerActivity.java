@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -29,8 +30,15 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.function.Consumer;
+
+import org.json.JSONObject;
 
 /**
  * Watching on the tablet: a Plex title, streamed by the host's bridge from the
@@ -45,7 +53,14 @@ import java.net.URL;
  * picture goes away (home, the moon, screen sleep), and Waydroid's software
  * h264 decoder can hang while flushing, so reset() never returned and the
  * whole app froze until Android killed it ("not responding"). Here every
- * MediaPlayer call runs on its own thread; if one hangs, only that thread does.
+ * MediaPlayer call runs on its playback's own thread.
+ *
+ * A hung decoder also keeps any later video from showing, so the player
+ * watches for it (a MediaPlayer call stuck for CALL_LIMIT_MS, no picture
+ * NO_PICTURE_MS after the stream was ready, a video that never finished
+ * closing) and then has the host fix Android (tablet-android-restart, via the
+ * bridge): first only its decoder services, then the video starts over; if
+ * that didn't help, "Oops! A system restart is needed" and a fresh Android.
  */
 public class PlayerActivity extends Activity {
     private static final String TAG = "TabletPlayer";
@@ -54,30 +69,72 @@ public class PlayerActivity extends Activity {
     private static final int NAVY = Color.rgb(0x0d, 0x47, 0xa1);
     private static final long CONTROLS_MS = 3500;
     private static final long GIVE_UP_MS = 60_000;  // nothing on screen by then: say so and go back
+    private static final long CALL_LIMIT_MS = 10_000;  // a MediaPlayer call this slow: the decoder is stuck
+    private static final long NO_PICTURE_MS = 25_000;  // stream ready, still no picture: the same
+    private static final long WATCH_EVERY_MS = 2_000;
+    private static final long FIX_WAIT_MS = 45_000;  // for the host's answer
+    private static final long RESTART_MESSAGE_MS = 5_000;  // "a system restart is needed" before it happens
+
+    /** A video in this app never finished closing: its decoder is stuck (until fixed). */
+    private static volatile boolean closeHung;
+
+    /** One MediaPlayer on its own thread. A retry gets a new one: the old thread may be stuck for good. */
+    private static final class Playback {
+        final HandlerThread thread = new HandlerThread("player");
+        final Handler handler;
+        MediaPlayer mp;           // its thread only
+        boolean prepared;         // its thread only
+        volatile long busySince;  // when the MediaPlayer call now running began; 0 when none is
+
+        Playback() {
+            thread.start();
+            handler = new Handler(thread.getLooper());
+        }
+
+        /** A MediaPlayer call, on this playback's thread, timed for the watchdog. */
+        void run(Runnable call) {
+            handler.post(() -> {
+                busySince = SystemClock.uptimeMillis();
+                try {
+                    call.run();
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "player call", e);
+                } finally {
+                    busySince = 0;
+                }
+            });
+        }
+    }
 
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private final HandlerThread playerThread = new HandlerThread("player");
-    private Handler player;    // every MediaPlayer call goes through here
-    private MediaPlayer mp;    // player thread only
-    private boolean prepared;  // player thread only
+    private Playback pb;       // the current one (UI thread)
+    private volatile Surface surface;
     private boolean playing;   // the UI thread's own idea of it (it never asks the player)
+    private long preparedAt;   // when the current stream was ready to play (uptime ms), 0 before
+    private boolean started;   // picture on screen (or given up)
+    private boolean wasPlaying = true;
+    private boolean mediaFixTried;
+    private boolean fixing;    // a fix is under way (or we've given up): no more fault checks
     private AudioManager audio;
     private AudioFocusRequest focus;
+    private AudioAttributes attrs;
     private FrameLayout root;
     private SurfaceView video;
     private int videoW, videoH;
     private View cover;
     private TextView coverText;
     private TextView pauseButton;
-    private boolean started;
-    private boolean wasPlaying = true;
     private String stream;
+    private String api;        // the bridge's /api
+    private String appName;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         stream = getIntent().getStringExtra(EXTRA_STREAM);
+        api = stream.substring(0, stream.indexOf("/hls/"));
+        appName = getApplicationInfo().loadLabel(getPackageManager()).toString();
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -113,25 +170,27 @@ public class PlayerActivity extends Activity {
         hideSystemBars();
 
         audio = getSystemService(AudioManager.class);
-        AudioAttributes attrs = new AudioAttributes.Builder()
+        attrs = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build();
         focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN).setAudioAttributes(attrs).build();
         audio.requestAudioFocus(focus);
         playing = true;
 
-        playerThread.start();
-        player = new Handler(playerThread.getLooper());
         // The surface comes and goes (the moon, screen sleep); the player stays.
         video.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
                 Surface s = holder.getSurface();
-                player.post(() -> {
-                    if (mp != null) {
-                        mp.setSurface(s);
-                    }
-                });
+                surface = s;
+                Playback p = pb;
+                if (p != null) {
+                    p.run(() -> {
+                        if (p.mp != null) {
+                            p.mp.setSurface(s);
+                        }
+                    });
+                }
             }
 
             @Override
@@ -140,59 +199,235 @@ public class PlayerActivity extends Activity {
 
             @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
-                player.post(() -> {
-                    if (mp != null) {
-                        mp.setSurface(null);
-                    }
-                });
+                surface = null;
+                Playback p = pb;
+                if (p != null) {
+                    p.run(() -> {
+                        if (p.mp != null) {
+                            p.mp.setSurface(null);
+                        }
+                    });
+                }
             }
         });
+
+        ui.postDelayed(watchdog, WATCH_EVERY_MS);
+        if (closeHung) {
+            fault("the last video never finished closing");
+        } else {
+            open();
+        }
+    }
+
+    /** Starts the stream (again) in a new Playback. */
+    private void open() {
+        Playback p = new Playback();
+        pb = p;
+        started = false;
+        preparedAt = 0;
         Uri uri = Uri.parse(stream);
-        player.post(() -> {
+        p.run(() -> {
             try {
-                mp = new MediaPlayer();  // made on the player thread, so its callbacks come here too
-                mp.setAudioAttributes(attrs);
-                mp.setOnInfoListener((p, what, extra) -> {
+                p.mp = new MediaPlayer();  // made on its thread, so its callbacks come there too
+                p.mp.setAudioAttributes(attrs);
+                p.mp.setOnInfoListener((m, what, extra) -> {
                     if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
-                        ui.post(this::liftCover);
+                        ui.post(() -> {
+                            if (pb == p) {
+                                liftCover();
+                            }
+                        });
                     }
                     return false;
                 });
-                mp.setOnVideoSizeChangedListener((p, w, h) -> ui.post(() -> {
+                p.mp.setOnVideoSizeChangedListener((m, w, h) -> ui.post(() -> {
                     videoW = w;
                     videoH = h;
                     fitVideo();
                 }));
-                mp.setOnCompletionListener(p -> ui.post(this::finish));
-                mp.setOnErrorListener((p, what, extra) -> {
+                p.mp.setOnCompletionListener(m -> ui.post(() -> {
+                    if (pb == p) {
+                        finish();
+                    }
+                }));
+                p.mp.setOnErrorListener((m, what, extra) -> {
                     Log.w(TAG, "playback error " + what + "/" + extra);
-                    ui.post(this::failed);
+                    boolean decoder = what == MediaPlayer.MEDIA_ERROR_SERVER_DIED
+                            || extra == MediaPlayer.MEDIA_ERROR_TIMED_OUT;
+                    ui.post(() -> {
+                        if (pb != p) {
+                            return;
+                        }
+                        if (decoder) {
+                            fault("player error " + what + "/" + extra);
+                        } else {
+                            failed();
+                        }
+                    });
                     return true;
                 });
-                mp.setOnPreparedListener(p -> {
-                    prepared = true;
+                p.mp.setOnPreparedListener(m -> {
+                    p.prepared = true;
                     ui.post(() -> {
+                        if (pb != p) {
+                            return;
+                        }
+                        preparedAt = SystemClock.uptimeMillis();
                         if (playing) {
-                            player.post(this::playerStart);
+                            p.run(() -> startOn(p));
                         }
                     });
                 });
-                Surface s = video.getHolder().getSurface();
+                Surface s = surface;
                 if (s != null && s.isValid()) {
-                    mp.setSurface(s);
+                    p.mp.setSurface(s);
                 }
-                mp.setDataSource(this, uri);
-                mp.prepareAsync();
+                p.mp.setDataSource(this, uri);
+                p.mp.prepareAsync();
             } catch (Exception e) {
                 Log.w(TAG, "opening the stream", e);
-                ui.post(this::failed);
+                ui.post(() -> {
+                    if (pb == p) {
+                        failed();
+                    }
+                });
             }
         });
-        ui.postDelayed(() -> {
-            if (!started) {
-                failed();
+        ui.removeCallbacks(giveUp);
+        ui.postDelayed(giveUp, GIVE_UP_MS);
+    }
+
+    /** Releases a Playback on its own thread; if that never finishes, the decoder is stuck. */
+    private static void close(Playback p) {
+        p.run(() -> {
+            if (p.mp != null) {
+                p.mp.release();
+                p.mp = null;
             }
-        }, GIVE_UP_MS);
+        });
+        p.thread.quitSafely();
+        new Thread(() -> {
+            SystemClock.sleep(CALL_LIMIT_MS);
+            if (p.thread.isAlive()) {
+                Log.w(TAG, "a video never finished closing: Android's video decoder is stuck");
+                closeHung = true;
+            }
+        }).start();
+    }
+
+    private final Runnable giveUp = () -> {
+        if (!started && !fixing) {
+            failed();
+        }
+    };
+
+    private final Runnable watchdog = new Runnable() {
+        @Override
+        public void run() {
+            Playback p = pb;
+            long now = SystemClock.uptimeMillis();
+            if (!fixing && p != null) {
+                long busy = p.busySince;
+                if (busy != 0 && now - busy > CALL_LIMIT_MS) {
+                    fault("a player call hung");
+                } else if (!started && preparedAt != 0 && now - preparedAt > NO_PICTURE_MS) {
+                    fault("no picture");
+                }
+            }
+            ui.postDelayed(this, WATCH_EVERY_MS);
+        }
+    };
+
+    /** Android's video decoder is stuck: fix it gently and start over, or else restart Android. */
+    private void fault(String why) {
+        if (fixing || isFinishing()) {
+            return;
+        }
+        Log.w(TAG, "Android's video decoder is stuck (" + why + ")");
+        fixing = true;
+        ui.removeCallbacks(giveUp);
+        Playback p = pb;
+        pb = null;
+        if (p != null) {
+            close(p);
+        }
+        pauseButton.setVisibility(View.GONE);
+        if (mediaFixTried) {
+            restartAndroid(why);
+            return;
+        }
+        mediaFixTried = true;
+        showCover("Oops! Fixing " + appName + "… 🔧");
+        askHost("media", why, result -> {
+            if ("media-fixed".equals(result)) {
+                Log.i(TAG, "decoder services restarted; starting over");
+                closeHung = false;
+                fixing = false;
+                showCover("Here it comes! 🎬");
+                open();
+            } else {
+                Log.w(TAG, "decoder fix: " + result);
+                restartAndroid(why);
+            }
+        });
+    }
+
+    private void restartAndroid(String why) {
+        fixing = true;
+        showCover("Oops! A system restart is needed\nto fix " + appName + ". 🔧\nBe right back!");
+        ui.postDelayed(() -> askHost("restart", why, result -> {
+            Log.w(TAG, "Android restart: " + result);
+            if (!"restarting".equals(result)) {
+                giveUpNow();
+                return;
+            }
+            // Restarting: Android (and this app) go away in a moment. If not, don't leave the kid waiting.
+            ui.postDelayed(this::giveUpNow, 60_000);
+        }), RESTART_MESSAGE_MS);
+    }
+
+    /** Asks the host (bridge → tablet-android-restart) for a fix; its answer, or null, on the UI thread. */
+    private void askHost(String level, String why, Consumer<String> then) {
+        new Thread(() -> {
+            String result = null;
+            try {
+                String id = new JSONObject(http("POST", api + "/android-fix?level=" + level
+                        + "&app=" + URLEncoder.encode(appName, StandardCharsets.UTF_8.name())
+                        + "&why=" + URLEncoder.encode(why, StandardCharsets.UTF_8.name()))).getString("id");
+                long end = SystemClock.uptimeMillis() + FIX_WAIT_MS;
+                while (result == null && SystemClock.uptimeMillis() < end) {
+                    SystemClock.sleep(1000);
+                    JSONObject answer = new JSONObject(http("GET", api + "/android-fix/" + id));
+                    result = answer.isNull("result") ? null : answer.getString("result");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "asking for a fix", e);
+            }
+            String r = result;
+            ui.post(() -> {
+                if (!isDestroyed()) {
+                    then.accept(r);
+                }
+            });
+        }).start();
+    }
+
+    private static String http(String method, String url) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setRequestMethod(method);
+        c.setConnectTimeout(5000);
+        c.setReadTimeout(10000);
+        try (InputStream in = c.getInputStream()) {
+            // Not readAllBytes(): that's API 33, and this app runs from 30.
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            for (int n; (n = in.read(buf)) > 0; ) {
+                out.write(buf, 0, n);
+            }
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+        } finally {
+            c.disconnect();
+        }
     }
 
     @Override
@@ -218,22 +453,17 @@ public class PlayerActivity extends Activity {
         ui.removeCallbacksAndMessages(null);
         audio.abandonAudioFocusRequest(focus);
         // Off the UI thread: this is the call that can hang (see the top).
-        player.post(() -> {
-            if (mp != null) {
-                mp.release();
-                mp = null;
-            }
-        });
-        playerThread.quitSafely();
+        Playback p = pb;
+        pb = null;
+        if (p != null) {
+            close(p);
+        }
         // Tell the bridge, so the Plex server stops converting.
         String sid = Uri.parse(stream).getPathSegments().size() > 2 ? Uri.parse(stream).getPathSegments().get(2) : "";
-        String stop = stream.substring(0, stream.indexOf("/hls/")) + "/hls-stop/" + sid;
+        String stop = api + "/hls-stop/" + sid;
         new Thread(() -> {
             try {
-                HttpURLConnection c = (HttpURLConnection) new URL(stop).openConnection();
-                c.setRequestMethod("POST");
-                c.setConnectTimeout(3000);
-                c.getResponseCode();
+                http("POST", stop);
             } catch (Exception e) {
                 Log.w(TAG, "stopping the stream", e);
             }
@@ -259,10 +489,19 @@ public class PlayerActivity extends Activity {
         bubble.setColor(Color.argb(235, 255, 255, 255));
         bubble.setCornerRadius(dp(40));
         coverText.setBackground(bubble);
-        box.addView(coverText, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        FrameLayout.LayoutParams textLp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+        textLp.setMargins(dp(24), 0, dp(24), 0);
+        box.addView(coverText, textLp);
         box.setClickable(true);  // nothing underneath gets a tap while it loads
         return box;
+    }
+
+    private void showCover(String text) {
+        cover.animate().cancel();
+        cover.setAlpha(1f);
+        cover.setVisibility(View.VISIBLE);
+        coverText.setText(text);
     }
 
     private void liftCover() {
@@ -277,10 +516,16 @@ public class PlayerActivity extends Activity {
         if (isFinishing()) {
             return;
         }
+        if (fixing) {  // a fix is on its way; it decides
+            return;
+        }
+        giveUpNow();
+    }
+
+    private void giveUpNow() {
+        fixing = true;  // no more fixing either
         started = true;  // no more waiting
-        cover.setAlpha(1f);
-        cover.setVisibility(View.VISIBLE);
-        coverText.setText("Oops! That didn't work.\nAsk a grown-up.");
+        showCover("Oops! That didn't work.\nAsk a grown-up.");
         ui.postDelayed(this::finish, 6000);
     }
 
@@ -310,22 +555,28 @@ public class PlayerActivity extends Activity {
 
     private void startPlayer() {
         playing = true;
-        player.post(this::playerStart);
+        Playback p = pb;
+        if (p != null) {
+            p.run(() -> startOn(p));
+        }
     }
 
     private void pausePlayer() {
         playing = false;
-        player.post(() -> {
-            if (mp != null && prepared && mp.isPlaying()) {
-                mp.pause();
-            }
-        });
+        Playback p = pb;
+        if (p != null) {
+            p.run(() -> {
+                if (p.mp != null && p.prepared && p.mp.isPlaying()) {
+                    p.mp.pause();
+                }
+            });
+        }
     }
 
-    /** Player thread. */
-    private void playerStart() {
-        if (mp != null && prepared && !mp.isPlaying()) {
-            mp.start();
+    /** Its thread. */
+    private static void startOn(Playback p) {
+        if (p.mp != null && p.prepared && !p.mp.isPlaying()) {
+            p.mp.start();
         }
     }
 

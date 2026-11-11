@@ -747,6 +747,12 @@ async function loadSystem() {
   add("TV", r.tv.power === null ? "can't find it on the network" : (r.tv.name || "TV") + (r.tv.power === "PowerOn" ? " · on" : " · off (standby)"), r.tv.power !== null);
   add("Plex", !r.plex.linked ? "not linked" : (r.plex.server || "server") + (r.plex.reachable ? " · reachable" : " · NOT reachable"), r.plex.linked && r.plex.reachable);
   add("Updates", r.update ? r.update.result.replace("-", " ") + " · " + new Date(r.update.at * 1000).toLocaleString() + " (" + r.update.commit + ")" : "no record yet", !r.update || r.update.result !== "stage-failed");
+  if (r.android_fix) {
+    const f = r.android_fix, fixWords = {"media-fixed": "fixed the video decoder", "media-failed": "video decoder fix didn't work",
+      "restarting": "restarted Android", "restart-failed": "Android restart FAILED"};
+    add("Automatic fixes", (fixWords[f.result] || f.result.replace(/-/g, " ")) + " for " + f.app + " · "
+        + new Date(f.at * 1000).toLocaleString(), f.result !== "restart-failed");
+  }
   add("Disk", r.disk.free_gb + " GB free of " + r.disk.total_gb + " GB", r.disk.free_gb > 5);
   add("Running for", r.uptime_hours < 48 ? r.uptime_hours + " hours" : Math.round(r.uptime_hours / 24) + " days", true);
   add("On the tablet now", r.kid_on_screen || "nobody (login screen or parent)", true);

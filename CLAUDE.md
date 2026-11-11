@@ -59,6 +59,16 @@ gitignored.)
     SurfaceView with its own MediaPlayer on a separate thread, never a
     VideoView: Android's software h264 decoder can hang while flushing, and
     VideoView's `reset()` on the UI thread then froze the whole app (ANR).
+    A hung decoder also blocks every later video, so the player watches for
+    it (a MediaPlayer call stuck 10 s, no picture 25 s after prepared, a
+    release that never returned) and asks the bridge (`/api/android-fix`,
+    kid route) for a fix by root `tablet-android-restart` (.path unit):
+    first `media` (kill the OMX HAL and `media.swcodec`; init restarts them;
+    not mediaserver, which stayed unregistered), then the video starts over
+    with a fresh transcode; if that fails, "Oops! A system restart is
+    needed" and `restart` (the Waydroid container; `tablet-android`'s loop
+    brings Android back under the splash). Rate-limited (1 min / 10 min),
+    only while a kid is on screen; the last fix shows on the web page.
     The Plex Android app
     can't be used: none of its links start a title (tested on the Dell).
   - **Dance** hands the song to YouTube Kids (one song, no party):

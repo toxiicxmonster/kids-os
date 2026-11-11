@@ -90,7 +90,32 @@ Type=oneshot
 ExecStart=/usr/local/sbin/tablet-volume --request
 EOF
 
+# An app found Android broken (a hung video decoder): the bridge drops a
+# request, this root helper restarts Android's decoder services ("media") or,
+# if that didn't help, the kid's whole Android ("restart", at most once per
+# 10 min; the app has said "Oops! A system restart is needed to fix <app>").
+install -m 755 "$TABLET_DIR/files/tablet-android-restart" /usr/local/sbin/tablet-android-restart
+cat > /etc/systemd/system/tablet-android-restart.path <<'EOF'
+[Unit]
+Description=Kids OS Android restart requests from the kid's apps
+
+[Path]
+PathChanged=/var/lib/tablet-movies/android-restart-request
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cat > /etc/systemd/system/tablet-android-restart.service <<EOF
+[Unit]
+Description=Kids OS: fix the kid's Android for an app (decoder services or a restart)
+
+[Service]
+Type=oneshot
+Environment=KID_USER=$KID_USER
+ExecStart=/usr/local/sbin/tablet-android-restart --request
+EOF
+
 systemctl daemon-reload
-systemctl enable --now tablet-volume.path
+systemctl enable --now tablet-volume.path tablet-android-restart.path
 systemctl enable tablet-movies-bridge.service
 systemctl restart tablet-movies-bridge.service

@@ -377,6 +377,13 @@ def stream_get(cfg, sid, rest):
             # LG plays silent; as Plex for Android it's AAC stereo.
             q.update({"X-Plex-Product": "Plex for Android", "X-Plex-Platform": "Android"})
         qs = urllib.parse.urlencode(q)
+        if stream.get("started"):
+            # The player starting over (after a decoder fix): a fresh transcode, from the start.
+            try:
+                fetch(f"{base}stop?session={sid}", headers=plex_headers(cfg, cfg["server_token"]), timeout=10)
+            except OSError:
+                pass
+        stream["started"] = True
         # The server only starts a stream it has first been asked to decide on
         # (without this, start.m3u8 is a bare 400).
         fetch(base + "decision?" + qs, headers={"Accept": "application/json"}, timeout=30)
@@ -1127,6 +1134,8 @@ def system_status():
         out["update"] = {"at": int(stamp), "commit": commit, "result": result.strip()}
     except (OSError, ValueError):
         out["update"] = None
+    fix = android_fix_status()
+    out["android_fix"] = ({"at": fix[1], "result": fix[2], "app": fix[3], "why": fix[4]} if fix else None)
     disk = shutil.disk_usage("/")
     out["disk"] = {"free_gb": round(disk.free / 1e9, 1), "total_gb": round(disk.total / 1e9, 1)}
     with open("/proc/uptime") as f:
@@ -1151,6 +1160,37 @@ def kid_volume(percent=None):
             if answer_id == request_id:
                 return int(value) if value.isdigit() else None
     return None
+
+
+def android_fix(level, app, why):
+    """An app found the kid's Android broken (Movies & TV: the video decoder
+    hung). Passed to the root helper tablet-android-restart (via its .path
+    unit): "media" restarts Android's decoder services, "restart" the whole
+    Android; it rate-limits both. Returns the request id for android_fix_result."""
+    if level not in ("media", "restart"):
+        raise ValueError("level must be media or restart")
+    clean = lambda s: " ".join(str(s).split())[:60] or "?"
+    request_id = secrets.token_hex(4)
+    (STATE / "android-restart-request").write_text(f"{request_id} {level} {clean(app)}\t{clean(why)}\n")
+    print(f"android fix requested: {level} for {clean(app)} ({clean(why)})", flush=True)
+    return request_id
+
+
+def android_fix_status():
+    """(id, epoch, result, app, why) of the helper's last answer, or None."""
+    try:
+        head, why = (STATE / "android-restart-status").read_text().rstrip("\n").split("\t", 1)
+        request_id, stamp, result, app = head.split(" ", 3)
+        return request_id, int(stamp), result, app, why
+    except (OSError, ValueError):
+        return None
+
+
+def android_fix_result(request_id):
+    """The helper's answer to that request: "media-fixed", "media-failed",
+    "restarting", "...-too-soon", "no-kid-on-screen", ...; None while waiting."""
+    status = android_fix_status()
+    return status[2] if status and status[0] == request_id else None
 
 
 def start(cfg, key):
@@ -1847,7 +1887,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                           ("POST", "theme"), ("GET", "dance"), ("GET", "dance-thumb"), ("POST", "dance-play"),
                           ("GET", "allowed"), ("POST", "activity"), ("GET", "coloring"),
                           ("GET", "coloring-page"), ("POST", "play-local"), ("POST", "dance-local"),
-                          ("GET", "hls"), ("POST", "hls-stop")}
+                          ("GET", "hls"), ("POST", "hls-stop"), ("POST", "android-fix"),
+                          ("GET", "android-fix")}
             if route not in kid_routes and not (client.is_loopback or parent_on_desktop()):
                 return self.reply(403, {"error": "parent_only"})
             # Whose lists: the kid on the screen; for the parent (Movies & TV setup
@@ -1886,6 +1927,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     cfg["tv"] = chosen
                     save(cfg)
                 return self.reply(200, {"tv": {k: v for k, v in chosen.items() if k not in TV_SECRETS}})
+            if route == ("POST", "android-fix"):
+                q = {k: v[0] for k, v in query.items()}
+                return self.reply(200, {"id": android_fix(q.get("level"), q.get("app", ""), q.get("why", ""))})
+            if route == ("GET", "android-fix"):
+                return self.reply(200, {"result": android_fix_result(parts[1] if len(parts) > 1 else "")})
             if route in (("GET", "hls"), ("POST", "hls-stop")):
                 # The player's stream (slow Plex round trips: outside the config lock).
                 with lock:

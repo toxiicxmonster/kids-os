@@ -3,8 +3,8 @@
      paused, right here in our own player); the parent sets it up. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.tabletos.movies"
-    android:versionCode="22"
-    android:versionName="1.20">
+    android:versionCode="23"
+    android:versionName="1.21">
 
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.INTERNET" />

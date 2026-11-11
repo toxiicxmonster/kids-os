@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Fixes the kid's Android when one of our apps finds it broken. So far that's
+# Movies & TV's player: Android's software video decoder can hang (and then no
+# video plays until it's restarted). Two levels, asked for by the app:
+#
+#   media    the gentle fix: restart only Android's video decoder services
+#            (the OMX HAL and media.swcodec; init brings them straight back),
+#            then check the media player service still answers. The app then
+#            tries its video again. Not mediaserver itself: restarting that by
+#            hand left "media.player" unregistered until Android restarted.
+#   restart  the app has told the kid "Oops! A system restart is needed to fix
+#            <app>": restart the Waydroid container. That ends the kid's
+#            Android session, and tablet-android's loop starts a fresh one under
+#            the Kids OS splash (no login screen).
+#
+#   tablet-android-restart --request          (tablet-android-restart.path)
+#        reads "<id> <level> <app>\t<why>" from REQUEST
+#   tablet-android-restart media|restart [app] [why]   by hand (no rate limit)
+#
+# Rate limits (a fault that this doesn't fix mustn't put the tablet in a loop):
+# the media fix at most once a minute, a restart at most once per 10 minutes.
+# Every outcome goes to STATUS ("<id> <epoch> <result> <app>\t<why>", read by
+# the app and shown on the parents' web page), the history of restarts to
+# RESTARTS, and all of it to the journal.
+set -uo pipefail
+
+STATE=/var/lib/tablet-movies
+REQUEST=$STATE/android-restart-request
+STATUS=$STATE/android-restart-status
+LAST=/var/lib/tablet-os/android-fix-last   # "<level> <epoch>" lines
+MEDIA_GAP=60
+RESTART_GAP=600
+KID_USER="${KID_USER:-kid}"
+KIDS_GROUP=kidsos-kids
+
+report() {  # <id> <result> <app> <why>
+  echo "tablet-android-restart: $2 ($3: $4)"
+  printf '%s %s %s %s\t%s\n' "$1" "$(date +%s)" "$2" "$3" "$4" > "$STATUS.tmp"
+  chown tablet-movies:tablet-movies "$STATUS.tmp"
+  mv "$STATUS.tmp" "$STATUS"
+}
+
+last_time() {  # <level>
+  sed -n "s/^$1 //p" "$LAST" 2>/dev/null | tail -1
+}
+
+remember() {  # <level>
+  mkdir -p "$(dirname "$LAST")"
+  { grep -v "^$1 " "$LAST" 2>/dev/null; echo "$1 $(date +%s)"; } > "$LAST.tmp"
+  mv "$LAST.tmp" "$LAST"
+}
+
+# Is a kid's session the one on the screen? (Never pull Android out from under
+# the parent's desktop.)
+kid_on_screen() {
+  local kids session user
+  kids=" $KID_USER $(getent group "$KIDS_GROUP" | cut -d: -f4 | tr , ' ') "
+  # loginctl prints -p properties in its own order: parse key=value.
+  session="$(loginctl show-seat seat0 -p ActiveSession 2>/dev/null | sed -n 's/^ActiveSession=//p')"
+  [[ -n $session ]] || return 1
+  user="$(loginctl show-session "$session" -p Name 2>/dev/null | sed -n 's/^Name=//p')"
+  [[ -n $user && $kids == *" $user "* ]]
+}
+
+# Android's decoder services, seen from the host. Before their first restart
+# the OMX HAL's name is "media.codec ..."; init restarts it under its path.
+OMX='^(media\.codec|/vendor/bin/hw/android\.hardware\.media\.omx@)'
+SWCODEC='^media\.swcodec|/mediaswcodec( |$)'
+
+media_healthy() {
+  pgrep -f "$OMX" >/dev/null && pgrep -f "$SWCODEC" >/dev/null || return 1
+  timeout 10 waydroid shell -- service check media.player 2>/dev/null | grep -q ': found' || return 1
+  # A deadlocked mediaserver doesn't answer this.
+  timeout 10 waydroid shell -- dumpsys media.player >/dev/null 2>&1
+}
+
+fix_media() {
+  pkill -KILL -f "$OMX"
+  pkill -KILL -f "$SWCODEC"
+  local _
+  for _ in $(seq 15); do
+    sleep 1
+    pgrep -f "$OMX" >/dev/null && pgrep -f "$SWCODEC" >/dev/null && break
+  done
+  sleep 2  # let them register with Android's service manager again
+  media_healthy
+}
+
+restart_android() {
+  systemctl restart waydroid-container
+}
+
+exec 9>/run/tablet-android-restart.lock
+flock 9
+
+if [[ ${1:-} == --request ]]; then
+  IFS= read -r line < "$REQUEST" || exit 0
+  read -r id level rest <<< "$line"
+  app="${rest%%$'\t'*}"
+  why=""
+  [[ $rest == *$'\t'* ]] && why="${rest#*$'\t'}"
+  case $level in
+    media) gap=$MEDIA_GAP ;;
+    restart) gap=$RESTART_GAP ;;
+    *) report "$id" bad-request "$app" "$why"; exit 0 ;;
+  esac
+  last="$(last_time "$level")"
+  if [[ $last =~ ^[0-9]+$ ]] && (( $(date +%s) - last < gap )); then
+    report "$id" "$level-too-soon" "$app" "$why"
+    exit 0
+  fi
+  if ! kid_on_screen; then
+    report "$id" no-kid-on-screen "$app" "$why"
+    exit 0
+  fi
+  remember "$level"
+else
+  id=manual
+  level="${1:?media or restart}"
+  app="${2:-by hand}"
+  why="${3:-}"
+fi
+
+case $level in
+  media)
+    if fix_media; then
+      report "$id" media-fixed "$app" "$why"
+    else
+      report "$id" media-failed "$app" "$why"
+    fi
+    ;;
+  restart)
+    # Answer first: the app asking won't be there to read it afterwards.
+    report "$id" restarting "$app" "$why"
+    restart_android || report "$id" restart-failed "$app" "$why"
+    ;;
+  *)
+    echo "usage: tablet-android-restart --request | media|restart [app] [why]" >&2
+    exit 2
+    ;;
+esac
