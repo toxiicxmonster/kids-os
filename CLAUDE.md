@@ -55,7 +55,11 @@ gitignored.)
     each HLS request to the server's universal transcoder as the kid's profile
     (offset 0, screen-sized, ≤3 Mbps h264/aac), so no Plex token reaches
     Android. The transcoder answers `start.m3u8` with a bare 400 unless
-    `decision` was asked first with the same query. The Plex Android app
+    `decision` was asked first with the same query. The player is a
+    SurfaceView with its own MediaPlayer on a separate thread, never a
+    VideoView: Android's software h264 decoder can hang while flushing, and
+    VideoView's `reset()` on the UI thread then froze the whole app (ANR).
+    The Plex Android app
     can't be used: none of its links start a title (tested on the Dell).
   - **Dance** hands the song to YouTube Kids (one song, no party):
     `https://kids.youtube.com/watch?v=<id>` starts it at once (youtube.com

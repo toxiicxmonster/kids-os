@@ -4,14 +4,21 @@ import android.app.Activity;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -21,7 +28,6 @@ import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
-import android.widget.VideoView;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -34,6 +40,12 @@ import java.net.URL;
  * picture is moving; then only the video, the big home button, and one big
  * pause/play button that shows up on a tap and hides again. No seek bar, no
  * menus. When it ends (or fails), it's back to the posters.
+ *
+ * Not a VideoView: that releases its MediaPlayer on the UI thread when the
+ * picture goes away (home, the moon, screen sleep), and Waydroid's software
+ * h264 decoder can hang while flushing, so reset() never returned and the
+ * whole app froze until Android killed it ("not responding"). Here every
+ * MediaPlayer call runs on its own thread; if one hangs, only that thread does.
  */
 public class PlayerActivity extends Activity {
     private static final String TAG = "TabletPlayer";
@@ -44,7 +56,16 @@ public class PlayerActivity extends Activity {
     private static final long GIVE_UP_MS = 60_000;  // nothing on screen by then: say so and go back
 
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private VideoView video;
+    private final HandlerThread playerThread = new HandlerThread("player");
+    private Handler player;    // every MediaPlayer call goes through here
+    private MediaPlayer mp;    // player thread only
+    private boolean prepared;  // player thread only
+    private boolean playing;   // the UI thread's own idea of it (it never asks the player)
+    private AudioManager audio;
+    private AudioFocusRequest focus;
+    private FrameLayout root;
+    private SurfaceView video;
+    private int videoW, videoH;
     private View cover;
     private TextView coverText;
     private TextView pauseButton;
@@ -58,11 +79,16 @@ public class PlayerActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         stream = getIntent().getStringExtra(EXTRA_STREAM);
 
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
-        video = new VideoView(this);
+        video = new SurfaceView(this);
         root.addView(video, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+        root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (r - l != or - ol || b - t != ob - ot) {
+                fitVideo();
+            }
+        });
 
         // A tap anywhere on the video shows the pause button for a moment.
         View tapCatcher = new View(this);
@@ -86,22 +112,82 @@ public class PlayerActivity extends Activity {
         setContentView(root);
         hideSystemBars();
 
-        video.setOnPreparedListener(mp -> {
-            mp.setOnInfoListener((p, what, extra) -> {
-                if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
-                    liftCover();
+        audio = getSystemService(AudioManager.class);
+        AudioAttributes attrs = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build();
+        focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN).setAudioAttributes(attrs).build();
+        audio.requestAudioFocus(focus);
+        playing = true;
+
+        playerThread.start();
+        player = new Handler(playerThread.getLooper());
+        // The surface comes and goes (the moon, screen sleep); the player stays.
+        video.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                Surface s = holder.getSurface();
+                player.post(() -> {
+                    if (mp != null) {
+                        mp.setSurface(s);
+                    }
+                });
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                player.post(() -> {
+                    if (mp != null) {
+                        mp.setSurface(null);
+                    }
+                });
+            }
+        });
+        Uri uri = Uri.parse(stream);
+        player.post(() -> {
+            try {
+                mp = new MediaPlayer();  // made on the player thread, so its callbacks come here too
+                mp.setAudioAttributes(attrs);
+                mp.setOnInfoListener((p, what, extra) -> {
+                    if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                        ui.post(this::liftCover);
+                    }
+                    return false;
+                });
+                mp.setOnVideoSizeChangedListener((p, w, h) -> ui.post(() -> {
+                    videoW = w;
+                    videoH = h;
+                    fitVideo();
+                }));
+                mp.setOnCompletionListener(p -> ui.post(this::finish));
+                mp.setOnErrorListener((p, what, extra) -> {
+                    Log.w(TAG, "playback error " + what + "/" + extra);
+                    ui.post(this::failed);
+                    return true;
+                });
+                mp.setOnPreparedListener(p -> {
+                    prepared = true;
+                    ui.post(() -> {
+                        if (playing) {
+                            player.post(this::playerStart);
+                        }
+                    });
+                });
+                Surface s = video.getHolder().getSurface();
+                if (s != null && s.isValid()) {
+                    mp.setSurface(s);
                 }
-                return false;
-            });
-            video.start();
+                mp.setDataSource(this, uri);
+                mp.prepareAsync();
+            } catch (Exception e) {
+                Log.w(TAG, "opening the stream", e);
+                ui.post(this::failed);
+            }
         });
-        video.setOnCompletionListener(mp -> finish());
-        video.setOnErrorListener((mp, what, extra) -> {
-            Log.w(TAG, "playback error " + what + "/" + extra);
-            failed();
-            return true;
-        });
-        video.setVideoURI(Uri.parse(stream));
         ui.postDelayed(() -> {
             if (!started) {
                 failed();
@@ -113,8 +199,8 @@ public class PlayerActivity extends Activity {
     protected void onPause() {
         super.onPause();
         // Leaving (home, the sleeping moon, screen sleep): stop the sound.
-        wasPlaying = video.isPlaying();
-        video.pause();
+        wasPlaying = playing;
+        pausePlayer();
     }
 
     @Override
@@ -122,7 +208,7 @@ public class PlayerActivity extends Activity {
         super.onResume();
         hideSystemBars();
         if (started && wasPlaying) {
-            video.start();
+            startPlayer();
         }
     }
 
@@ -130,7 +216,15 @@ public class PlayerActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         ui.removeCallbacksAndMessages(null);
-        video.stopPlayback();
+        audio.abandonAudioFocusRequest(focus);
+        // Off the UI thread: this is the call that can hang (see the top).
+        player.post(() -> {
+            if (mp != null) {
+                mp.release();
+                mp = null;
+            }
+        });
+        playerThread.quitSafely();
         // Tell the bridge, so the Plex server stops converting.
         String sid = Uri.parse(stream).getPathSegments().size() > 2 ? Uri.parse(stream).getPathSegments().get(2) : "";
         String stop = stream.substring(0, stream.indexOf("/hls/")) + "/hls-stop/" + sid;
@@ -195,10 +289,10 @@ public class PlayerActivity extends Activity {
             return;
         }
         // Emoji forms, so both draw in colour (a plain ▶ comes out a small grey triangle).
-        pauseButton.setText(video.isPlaying() ? "⏸️" : "▶️");
+        pauseButton.setText(playing ? "⏸️" : "▶️");
         pauseButton.setVisibility(View.VISIBLE);
         ui.removeCallbacks(hideControls);
-        if (video.isPlaying()) {
+        if (playing) {
             ui.postDelayed(hideControls, CONTROLS_MS);
         }
     }
@@ -206,12 +300,52 @@ public class PlayerActivity extends Activity {
     private final Runnable hideControls = () -> pauseButton.setVisibility(View.GONE);
 
     private void togglePause() {
-        if (video.isPlaying()) {
-            video.pause();
+        if (playing) {
+            pausePlayer();
         } else {
-            video.start();
+            startPlayer();
         }
         showControls();  // paused: the ▶ stays until it's tapped
+    }
+
+    private void startPlayer() {
+        playing = true;
+        player.post(this::playerStart);
+    }
+
+    private void pausePlayer() {
+        playing = false;
+        player.post(() -> {
+            if (mp != null && prepared && mp.isPlaying()) {
+                mp.pause();
+            }
+        });
+    }
+
+    /** Player thread. */
+    private void playerStart() {
+        if (mp != null && prepared && !mp.isPlaying()) {
+            mp.start();
+        }
+    }
+
+    /** The whole picture on screen, never stretched (black bars where it doesn't fill). */
+    private void fitVideo() {
+        int w = root.getWidth(), h = root.getHeight();
+        if (videoW <= 0 || videoH <= 0 || w <= 0 || h <= 0) {
+            return;
+        }
+        int fitW = w, fitH = (int) ((long) w * videoH / videoW);
+        if (fitH > h) {
+            fitH = h;
+            fitW = (int) ((long) h * videoW / videoH);
+        }
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) video.getLayoutParams();
+        if (lp.width != fitW || lp.height != fitH) {
+            lp.width = fitW;
+            lp.height = fitH;
+            video.setLayoutParams(lp);
+        }
     }
 
     private TextView roundButton(String label, int sp, int sizeDp) {
