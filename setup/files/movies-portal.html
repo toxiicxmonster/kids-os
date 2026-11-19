@@ -2,269 +2,399 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Movies &amp; TV</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f9be8">
+<title>Kids OS</title>
 <style>
   :root {
-    --sky: #2f9be8; --sky-light: #e3f4fd; --navy: #0d47a1; --ink: #1d2733; --muted: #5b6b7d;
-    --card: #ffffff; --bg: #f2f8fd; --red: #d93a3a; --green: #2e9d5b; --line: #d5e3ee;
+    --sky: #2f9be8; --sky-dark: #1f7fc4; --sky-light: #e3f4fd; --navy: #0d47a1; --ink: #1d2733; --muted: #5b6b7d;
+    --card: #ffffff; --bg: #f2f8fd; --red: #d93a3a; --red-light: #fdeaea; --green: #2e9d5b; --green-light: #e4f6eb;
+    --amber: #b86e00; --amber-light: #fff3dc; --line: #d5e3ee; --shadow: 0 1px 3px rgba(13, 71, 161, .08);
   }
   @media (prefers-color-scheme: dark) {
-    :root { --card: #17212c; --bg: #0e151d; --ink: #e6eef6; --muted: #9db0c3; --sky-light: #1d3347; --line: #2a3a4b; }
+    :root { --card: #17212c; --bg: #0e151d; --ink: #e6eef6; --muted: #9db0c3; --sky-light: #1d3347; --line: #2a3a4b;
+            --red-light: #3a1d1d; --green-light: #173323; --amber-light: #3a2c12; --amber: #f0b453; --shadow: none; }
   }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--ink); }
-  header { background: linear-gradient(180deg, #2f9be8, #6cc4f5); color: #fff; padding: 18px 16px 22px; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { scroll-padding-top: 16px; }
+  body { margin: 0; font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--ink);
+         padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
+  header { background: linear-gradient(180deg, #2f9be8, #6cc4f5); color: #fff; padding: 16px 16px 18px; }
+  header .in { max-width: 720px; margin: 0 auto; }
   header h1 { margin: 0; font-size: 22px; }
-  header p { margin: 4px 0 0; opacity: .9; font-size: 14px; }
+  header p { margin: 2px 0 0; opacity: .92; font-size: 14px; }
   main { max-width: 720px; margin: 0 auto; padding: 16px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin-bottom: 16px; }
-  h2 { font-size: 17px; margin: 0 0 10px; }
-  .status { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
-  .status.on { color: var(--green); } .status.paused { color: var(--red); }
-  .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
-  button { font: inherit; border: 0; border-radius: 12px; padding: 10px 14px; background: var(--sky-light); color: var(--ink); cursor: pointer; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 16px; margin-bottom: 14px; box-shadow: var(--shadow); }
+  h2 { font-size: 18px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  h2 .sub { font-weight: 400; color: var(--muted); font-size: 14px; }
+  h3 { font-size: 15px; margin: 14px 0 6px; }
+  .msg { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
+  .error { color: var(--red); }
+  a { color: var(--sky-dark); }
+
+  /* Buttons: big, easy to hit with a thumb. */
+  button { font: inherit; border: 0; border-radius: 14px; padding: 12px 16px; min-height: 46px; background: var(--sky-light);
+           color: var(--ink); cursor: pointer; font-weight: 600; }
   button.primary { background: var(--sky); color: #fff; }
-  button.danger { background: transparent; color: var(--red); padding: 6px 10px; }
-  button:disabled { opacity: .5; }
-  input { font: inherit; width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  button.warn { background: var(--red-light); color: var(--red); }
+  button.big { width: 100%; font-size: 18px; min-height: 56px; }
+  button.link { background: none; color: var(--red); padding: 8px 10px; min-height: 40px; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  button:active:not(:disabled) { transform: scale(.97); }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+  .buttons > button { flex: 1 1 auto; }
+  .chips { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+
+  input, select { font: inherit; width: 100%; padding: 12px; min-height: 46px; border-radius: 12px; border: 1px solid var(--line);
+                  background: var(--card); color: var(--ink); }
+  input[type=range] { padding: 0; border: 0; background: none; accent-color: var(--sky); height: 40px; min-height: 0; }
+  input[type=time], select { width: auto; }
+  .search { display: flex; gap: 8px; margin-bottom: 8px; }
+  .search input { flex: 1; min-width: 0; }
+
+  /* Big status line on top of a card. */
+  .state { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; margin-bottom: 12px; font-weight: 700; font-size: 18px; }
+  .state .icon { font-size: 28px; line-height: 1; }
+  .state small { display: block; font-weight: 400; font-size: 14px; color: var(--muted); }
+  .state.on { background: var(--green-light); color: var(--green); }
+  .state.off { background: var(--red-light); color: var(--red); }
+  .state.info { background: var(--sky-light); color: var(--ink); }
+  .state.wait { background: var(--amber-light); color: var(--amber); }
+
+  /* Lists of titles and songs. */
   .row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
   .row:first-child { border-top: 0; }
-  .row img { width: 44px; height: 66px; object-fit: cover; border-radius: 6px; background: var(--sky-light); flex: none; }
-  .row .title { flex: 1; min-width: 0; }
-  .row .sub { color: var(--muted); font-size: 13px; }
-  .search { display: flex; gap: 8px; margin-bottom: 8px; }
-  .search input { flex: 1; }
-  .msg { color: var(--muted); font-size: 14px; margin: 6px 0 0; }
-  .error { color: var(--red); }
-  #login { max-width: 360px; margin: 40px auto; text-align: center; }
-  #login input { text-align: center; font-size: 28px; letter-spacing: 8px; margin: 12px 0; }
-  .slider { flex: 1 1 100%; display: block; margin-bottom: 4px; }
-  .slider span { display: block; font-weight: 600; margin-bottom: 4px; }
-  .slider input { padding: 0; border: 0; background: none; accent-color: var(--sky); height: 36px; }
-  .tabs { display: flex; gap: 8px; margin: 4px 0 16px; }
-  .tabs button { flex: 1; font-weight: 700; padding: 12px; }
-  .tabs button.on { background: var(--sky); color: #fff; }
+  .row img { width: 44px; height: 66px; object-fit: cover; border-radius: 8px; background: var(--sky-light); flex: none; }
   .row img.wide { width: 96px; height: 54px; }
-  .kidbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-  .kidbar button { font-weight: 700; }
-  .kidbar button.on { background: var(--sky); color: #fff; }
-  .facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 15px; }
+  .row .title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .row .sub { color: var(--muted); font-size: 13px; }
+  .row button { flex: none; }
+  .row button.added { background: var(--green-light); color: var(--green); }
+
+  .seg { display: flex; background: var(--sky-light); border-radius: 14px; padding: 4px; gap: 4px; margin-bottom: 14px; }
+  .seg button { flex: 1; background: none; min-height: 42px; padding: 8px; font-size: 15px; }
+  .seg button.on { background: var(--card); color: var(--navy); box-shadow: var(--shadow); }
+  @media (prefers-color-scheme: dark) { .seg button.on { color: var(--ink); } }
+
+  .kidbar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .kidbar button { background: rgba(255, 255, 255, .25); color: #fff; min-height: 40px; padding: 8px 14px; }
+  .kidbar button.on { background: #fff; color: var(--navy); }
+
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; font-size: 15px; margin: 0; }
   .facts dt { color: var(--muted); }
-  .facts dd { margin: 0; }
-  .ok { color: var(--green); } .bad { color: var(--red); }
-  .event { display: flex; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 15px; }
-  .event:first-child { border-top: 0; }
+  .facts dd { margin: 0; overflow-wrap: anywhere; }
+  .bad { color: var(--red); font-weight: 600; }
+
+  .event { display: flex; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 15px; }
   .event .when { color: var(--muted); flex: none; width: 76px; }
-  .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
-  .inline input[type=time] { width: auto; }
-  .inline select { font: inherit; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  .day { font-weight: 700; color: var(--muted); font-size: 14px; margin-top: 12px; }
+
+  .field { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .field:first-of-type { border-top: 0; }
+  .field label { font-weight: 600; }
+  .field .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .switch { position: relative; width: 56px; height: 32px; flex: none; }
+  .switch input { opacity: 0; width: 100%; height: 100%; margin: 0; position: absolute; cursor: pointer; z-index: 1; min-height: 0; }
+  .switch span { position: absolute; inset: 0; background: var(--line); border-radius: 16px; transition: .2s; }
+  .switch span::after { content: ""; position: absolute; width: 26px; height: 26px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+  .switch input:checked + span { background: var(--green); }
+  .switch input:checked + span::after { left: 27px; }
+  .saved { color: var(--green); font-size: 14px; font-weight: 600; min-height: 20px; }
+
+  .vol { display: flex; align-items: center; gap: 10px; font-size: 24px; }
+  .vol input { flex: 1; }
+  .vol b { font-size: 16px; width: 48px; text-align: right; }
+
   .pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
   .page { position: relative; border: 1px solid var(--line); border-radius: 12px; background: #fff;
           padding: 6px; text-align: center; color: #1d2733; font-size: 13px; cursor: pointer; }
   .page img { width: 100%; aspect-ratio: 1; object-fit: contain; display: block; }
   .page.chosen { outline: 3px solid var(--green); }
-  .page .x { position: absolute; top: 2px; right: 2px; background: var(--card); color: var(--red);
-             border-radius: 50%; width: 30px; height: 30px; padding: 0; line-height: 30px; }
+  .page.chosen::before { content: "✓"; position: absolute; top: 4px; left: 6px; color: var(--green); font-weight: 800; font-size: 18px; }
+  .page .x { position: absolute; top: 2px; right: 2px; background: #fff; color: var(--red); border: 1px solid var(--line);
+             border-radius: 50%; width: 32px; height: 32px; min-height: 0; padding: 0; line-height: 30px; }
+
   .bars { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: end; height: 130px; margin: 6px 0 4px; }
   .bar { background: var(--sky); border-radius: 6px 6px 2px 2px; min-height: 2px; }
   .bar.today { background: var(--navy); }
   .barlabels { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; text-align: center; font-size: 12px; color: var(--muted); }
   .barlabels b { display: block; color: var(--ink); font-size: 13px; }
   .tops { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
-  .tops h3 { font-size: 14px; margin: 0 0 4px; }
+  .tops h3 { margin-top: 0; }
   .tops ol { margin: 0; padding-left: 20px; font-size: 14px; }
   @media (max-width: 480px) { .tops { grid-template-columns: 1fr; } }
+
+  details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 12px; }
+  summary { cursor: pointer; font-weight: 600; color: var(--sky-dark); padding: 6px 0; }
+
+  #login { max-width: 360px; margin: 32px auto; text-align: center; }
+  #login .lock { font-size: 48px; }
+  #login input { text-align: center; font-size: 30px; letter-spacing: 10px; margin: 12px 0; }
+
+  /* Bottom tabs, like a phone app. */
+  nav.bottom { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line);
+               display: flex; justify-content: center; padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); z-index: 5; }
+  nav.bottom .in { display: flex; width: 100%; max-width: 720px; }
+  nav.bottom button { flex: 1; background: none; display: flex; flex-direction: column; align-items: center; gap: 2px;
+                      font-size: 12px; color: var(--muted); padding: 6px 2px; min-height: 56px; border-radius: 12px; }
+  nav.bottom button span { font-size: 24px; line-height: 1; }
+  nav.bottom button.on { color: var(--navy); background: var(--sky-light); }
+  @media (prefers-color-scheme: dark) { nav.bottom button.on { color: var(--ink); } }
+
+  #toast { position: fixed; left: 50%; bottom: calc(92px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
+           background: #1d2733; color: #fff; padding: 12px 18px; border-radius: 14px; font-weight: 600; max-width: calc(100% - 32px);
+           opacity: 0; pointer-events: none; transition: .25s; z-index: 10; text-align: center; }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #toast.bad { background: var(--red); }
+
+  dialog { border: 0; border-radius: 20px; padding: 22px; max-width: 380px; width: calc(100% - 32px); background: var(--card); color: var(--ink); }
+  dialog::backdrop { background: rgba(10, 20, 30, .5); }
+  dialog h2 { font-size: 20px; }
+  dialog p { margin: 0 0 18px; color: var(--muted); }
+
+  #offline { position: fixed; inset: 0; background: var(--bg); z-index: 20; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; text-align: center; padding: 24px; }
+  #offline .icon { font-size: 64px; }
+  #offline p { color: var(--muted); max-width: 320px; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Kids OS · Movies &amp; TV · Dance</h1>
-  <p id="tvline">Movie time on the kids' tablet</p>
+  <div class="in">
+    <h1>Kids OS</h1>
+    <p id="tvline">The kids' tablet</p>
+    <nav class="kidbar" id="kidBar" hidden></nav>
+  </div>
 </header>
+
 <main>
   <section id="login" class="card" hidden>
-    <h2>Enter the PIN</h2>
-    <p class="msg">Set in Movies &amp; TV setup on the tablet (parent mode).</p>
+    <div class="lock">🔒</div>
+    <h2 style="justify-content:center">Enter the PIN</h2>
+    <p class="msg">It's set in Movies &amp; TV setup on the tablet (parent mode).</p>
     <input id="pin" inputmode="numeric" autocomplete="current-password" type="password" maxlength="8" aria-label="PIN">
-    <button class="primary" id="loginBtn" style="width:100%">Unlock</button>
+    <button class="primary big" id="loginBtn">Unlock</button>
     <p class="msg error" id="loginMsg"></p>
   </section>
 
   <div id="app" hidden>
-    <nav class="kidbar" id="kidBar" hidden></nav>
+    <!-- ============ Home: the things you do most ============ -->
+    <div id="view-home">
+      <section class="card">
+        <h2>🌙 Tablet time <span id="schedKid" class="sub"></span></h2>
+        <div id="schedStatus" class="state info"><span class="icon">⏳</span><div>Checking…</div></div>
+        <div class="chips">
+          <button id="extra30">➕ 30 min</button>
+          <button id="extra60">➕ 1 hour</button>
+          <button id="sleepNow" class="warn">🌙 Sleep now</button>
+        </div>
+        <p class="msg">Extra time and Sleep now go over the schedule. Change the schedule in <a href="#settings" data-go="settings">Settings</a>.</p>
+      </section>
 
-    <section class="card">
-      <h2>📺 On the TV now</h2>
-      <div id="nowText" class="msg">Checking…</div>
-      <div class="buttons" style="margin-top:10px"><button id="stopBtn">⏹ Stop (TV home screen)</button></div>
-    </section>
+      <section class="card">
+        <h2>🎬 Movie time</h2>
+        <div id="pauseState" class="state info"><span class="icon">⏳</span><div>Checking…</div></div>
+        <div id="pauseChoices">
+          <p class="msg" style="margin:0 0 8px">Pause the TV for:</p>
+          <div class="chips">
+            <button data-pause="30">30 min</button>
+            <button data-pause="60">1 hour</button>
+            <button data-pause="120">2 hours</button>
+            <button data-pause="tomorrow">Until morning</button>
+            <button data-pause="forever">Until I turn it back on</button>
+          </div>
+        </div>
+        <button id="resumeBtn" class="primary big" hidden>▶️ Turn movie time back on</button>
+        <p class="msg">While it's paused, nothing starts on the TV. If Plex or YouTube Kids is on the tablet, the kids
+          watch there instead (Netflix stays TV-only). Tablet time limits apply either way.</p>
+      </section>
 
-    <section class="card">
-      <h2>🌙 Tablet time <span id="schedKid" class="sub"></span></h2>
-      <div id="schedStatus" class="status"></div>
-      <label class="inline"><input type="checkbox" id="schedOn" style="width:auto"> Only allow the tablet</label>
-      <div class="inline">
-        from <input type="time" id="schedFrom" value="07:00"> to <input type="time" id="schedTo" value="19:30">
-      </div>
-      <div class="inline">
-        up to
-        <select id="schedDaily">
-          <option value="0">no daily limit</option><option value="30">30 minutes</option>
-          <option value="45">45 minutes</option><option value="60">1 hour</option>
-          <option value="90">1½ hours</option><option value="120">2 hours</option>
-          <option value="180">3 hours</option><option value="240">4 hours</option>
-        </select> a day
-        <button class="primary" id="schedSave">Save</button>
-      </div>
-      <div class="buttons">
-        <button id="extra30">+30 minutes</button>
-        <button id="extra60">+1 hour</button>
-        <button id="sleepNow">🌙 Sleep now</button>
-      </div>
-      <p class="msg">Outside her time the tablet shows a "sleeping" moon and Movies &amp; TV and Dance won't start
-        anything. "+30 minutes" and "Sleep now" override the schedule.</p>
-    </section>
+      <section class="card">
+        <h2>📺 On the TV now</h2>
+        <div id="nowState" class="state info"><span class="icon">📺</span><div>Checking…</div></div>
+        <button id="stopBtn" class="big">⏹ Stop it (TV home screen)</button>
+      </section>
 
-    <section class="card">
-      <h2>Movie time</h2>
-      <div id="pauseText" class="status"></div>
-      <div class="buttons">
-        <label class="slider" for="pauseLen">
-          <span id="pauseLenText"></span>
-          <input id="pauseLen" type="range" min="15" max="1440" step="15" value="60">
-        </label>
-        <button data-pause="slider" class="primary" id="pauseBtn">Pause</button>
-        <button data-pause="forever">Until I resume</button>
-        <button data-pause="0" id="resumeBtn">Resume now</button>
-      </div>
-      <p class="msg">While paused, nothing starts on the TV. If the Plex or YouTube Kids app is installed on the tablet, the kids watch there instead (Plex titles and Dance songs; Netflix stays TV-only). Otherwise their posters are dimmed. Tablet time limits apply either way.</p>
-    </section>
-
-    <section class="card">
-      <h2>Tablet volume</h2>
-      <label class="slider" for="vol">
-        <span id="volText">Checking…</span>
-        <input id="vol" type="range" min="0" max="100" step="5" value="100" disabled>
-      </label>
-      <p class="msg">Same as "Kid volume" in parent mode on the tablet. The kids can't change it.</p>
-    </section>
-
-    <nav class="tabs">
-      <button id="tabMoviesBtn" class="on">🎬 Movies &amp; TV</button>
-      <button id="tabDanceBtn">💃 Dance</button>
-      <button id="tabColorBtn">🖍️ Coloring</button>
-    </nav>
-
-    <div id="tabMovies">
-    <section class="card">
-      <h2>On the kids' list <span id="count" class="sub"></span></h2>
-      <div id="items"></div>
-    </section>
-
-    <section class="card">
-      <h2>Add movies and shows</h2>
-      <div class="search">
-        <input id="q" placeholder="Search the kids' library" enterkeyhint="search">
-        <button class="primary" id="searchBtn">Search</button>
-      </div>
-      <div id="results"></div>
-    </section>
-
-    <section class="card">
-      <h2>Add from Netflix</h2>
-      <div class="search">
-        <input id="nf" placeholder="netflix.com/title/… link or number" inputmode="url">
-        <button class="primary" id="nfBtn">Add</button>
-      </div>
-      <p class="msg" id="nfMsg">Find the show on netflix.com and copy its link. It opens in Netflix on the TV,
-        in whichever Netflix profile was used last there, so keep the TV on the kids' profile.</p>
-    </section>
+      <section class="card">
+        <h2>🔊 Tablet volume</h2>
+        <div class="vol">🔈<input id="vol" type="range" min="0" max="100" step="5" value="100" disabled aria-label="Tablet volume">🔊<b id="volText">…</b></div>
+        <p class="msg" id="volMsg">The kids can't change it on the tablet.</p>
+      </section>
     </div>
 
-    <div id="tabDance" hidden>
-    <section class="card">
-      <h2>Songs she can pick <span id="danceCount" class="sub"></span></h2>
-      <div id="danceItems"><p class="msg">Loading…</p></div>
-      <p class="msg">In the Dance app she taps one song, or lines up to 6 for a dance party. They play
-        on the TV through YouTube (with YouTube's ads); after the last one, YouTube carries on with its autoplay.</p>
-    </section>
-
-    <section class="card">
-      <h2>Add Danny Go! songs</h2>
-      <div class="search">
-        <input id="dq" placeholder="Search Danny Go! songs (blank = all)" enterkeyhint="search">
-        <button class="primary" id="dSearchBtn">Search</button>
+    <!-- ============ Lists: what the kids can pick ============ -->
+    <div id="view-lists" hidden>
+      <div class="seg" role="tablist">
+        <button id="tabMoviesBtn" class="on">🎬 Movies &amp; TV</button>
+        <button id="tabDanceBtn">💃 Dance</button>
+        <button id="tabColorBtn">🖍️ Coloring</button>
       </div>
-      <div id="dResults"></div>
-    </section>
 
-    <section class="card">
-      <h2>Add any YouTube video</h2>
-      <div class="search">
-        <input id="dLink" placeholder="youtube.com/watch?v=… or youtu.be/…" inputmode="url">
-        <button class="primary" id="dLinkBtn">Add</button>
+      <div id="tabMovies">
+        <section class="card">
+          <h2>➕ Add movies and shows</h2>
+          <div class="search">
+            <input id="q" type="search" placeholder="Search your Plex library" enterkeyhint="search">
+            <button class="primary" id="searchBtn">Search</button>
+          </div>
+          <div id="results"></div>
+          <details>
+            <summary>Add a Netflix title</summary>
+            <div class="search" style="margin-top:8px">
+              <input id="nf" placeholder="netflix.com/title/… link" inputmode="url">
+              <button class="primary" id="nfBtn">Add</button>
+            </div>
+            <p class="msg" id="nfMsg">Find the show on netflix.com and copy its link. It plays in Netflix on the TV,
+              in whichever profile was used there last, so keep the TV on the kids' profile.</p>
+          </details>
+        </section>
+        <section class="card">
+          <h2>On the list <span id="count" class="sub"></span></h2>
+          <div id="items"><p class="msg">Loading…</p></div>
+        </section>
       </div>
-      <p class="msg" id="dLinkMsg">Paste the link of any music video (Share → Copy link in the YouTube app).</p>
-    </section>
+
+      <div id="tabDance" hidden>
+        <section class="card">
+          <h2>➕ Add songs</h2>
+          <div class="search">
+            <input id="dq" type="search" placeholder="Search Danny Go! songs" enterkeyhint="search">
+            <button class="primary" id="dSearchBtn">Search</button>
+          </div>
+          <div id="dResults"><p class="msg">Tap Search with nothing typed to see every song.</p></div>
+          <details>
+            <summary>Add any YouTube video</summary>
+            <div class="search" style="margin-top:8px">
+              <input id="dLink" placeholder="youtube.com/watch?v=… or youtu.be/…" inputmode="url">
+              <button class="primary" id="dLinkBtn">Add</button>
+            </div>
+            <p class="msg" id="dLinkMsg">Paste the link of a music video (Share → Copy link in the YouTube app).</p>
+          </details>
+        </section>
+        <section class="card">
+          <h2>Songs on the list <span id="danceCount" class="sub"></span></h2>
+          <div id="danceItems"><p class="msg">Loading…</p></div>
+          <p class="msg">The kids tap one song, or line up to 6 for a dance party. On the TV they play through
+            YouTube (with its ads). On the tablet they play in YouTube Kids, one song at a time, and only the 🏠 button works.</p>
+        </section>
+      </div>
+
+      <div id="tabColor" hidden>
+        <section class="card">
+          <h2>➕ Add coloring pages</h2>
+          <div class="search">
+            <input id="cq" type="search" placeholder="Try: cat, truck, dinosaur" enterkeyhint="search">
+            <button class="primary" id="cSearchBtn">Search</button>
+          </div>
+          <div id="cResults" class="pages"></div>
+          <p class="msg">Tap a picture to add it. From <a href="https://www.crayola.com/free-coloring-pages" target="_blank" rel="noopener">Crayola's
+            free coloring pages</a> (personal use; downloaded to the tablet only). Big simple shapes work best for little fingers.</p>
+          <details>
+            <summary>Add your own picture</summary>
+            <div class="search" style="margin-top:8px">
+              <input id="cUrl" placeholder="Link to a picture or coloring page" inputmode="url">
+              <button class="primary" id="cUrlBtn">Add</button>
+            </div>
+            <div class="search"><input id="cFile" type="file" accept="image/*,.svg" multiple></div>
+            <p class="msg" id="cOwnMsg">Or pick picture files from this phone or computer (up to 20 MB each). They're turned
+              into black lines on white. Only add pictures you're allowed to use.</p>
+          </details>
+        </section>
+        <section class="card">
+          <h2>Pages in Paint <span id="colorCount" class="sub"></span></h2>
+          <div id="colorItems" class="pages"><p class="msg">Loading…</p></div>
+          <p class="msg">Shared by all the kids, and kept on the tablet so they work without internet. Tap ✕ to take one off.</p>
+        </section>
+      </div>
     </div>
 
-    <div id="tabColor" hidden>
-    <section class="card">
-      <h2>Coloring pages <span id="colorCount" class="sub"></span></h2>
-      <div id="colorItems" class="pages"><p class="msg">Loading…</p></div>
-      <p class="msg">The pages in the Paint app, shared by all the kids. They're kept on the tablet,
-        so they work even when the internet is down. Tap ✕ to take one off.</p>
-    </section>
-
-    <section class="card">
-      <h2>Add coloring pages</h2>
-      <div class="search">
-        <input id="cq" placeholder="Try: cat, truck, dinosaur, unicorn" enterkeyhint="search">
-        <button class="primary" id="cSearchBtn">Search</button>
-      </div>
-      <div id="cResults" class="pages"></div>
-      <p class="msg">From <a href="https://www.crayola.com/free-coloring-pages" target="_blank" rel="noopener">Crayola's
-        free coloring pages</a> (free for personal use; they're downloaded to the tablet only). Simple pictures
-        with big shapes work best for little fingers. Tap one to add it.</p>
-    </section>
-
-    <section class="card">
-      <h2>Add your own page</h2>
-      <div class="search">
-        <input id="cUrl" placeholder="Link to a picture, or a Crayola or Openclipart page" inputmode="url">
-        <button class="primary" id="cUrlBtn">Add</button>
-      </div>
-      <div class="search">
-        <input id="cFile" type="file" accept="image/*,.svg" multiple>
-      </div>
-      <p class="msg" id="cOwnMsg">A link to a coloring page picture, or picture files from this phone or
-        computer (PNG, JPG, GIF, WebP or SVG, up to 20 MB). It's turned into black lines on white and kept
-        on the tablet. Only add pictures you're allowed to use.</p>
-    </section>
+    <!-- ============ Activity ============ -->
+    <div id="view-activity" hidden>
+      <section class="card">
+        <h2>📊 This week <span id="weekKid" class="sub"></span></h2>
+        <div id="week"><p class="msg">Loading…</p></div>
+      </section>
+      <section class="card">
+        <h2>🕘 Recently <span id="histKid" class="sub"></span></h2>
+        <div id="history"><p class="msg">Loading…</p></div>
+      </section>
     </div>
 
-    <section class="card">
-      <h2>📊 This week <span id="weekKid" class="sub"></span></h2>
-      <div id="week"><p class="msg">Loading…</p></div>
-    </section>
+    <!-- ============ Settings ============ -->
+    <div id="view-settings" hidden>
+      <section class="card">
+        <h2>🗓️ Tablet schedule <span id="schedKid2" class="sub"></span></h2>
+        <div class="field">
+          <label for="schedOn">Only allow certain hours</label>
+          <div class="switch"><input type="checkbox" id="schedOn"><span></span></div>
+        </div>
+        <div class="field" id="hoursField">
+          <label>Allowed from</label>
+          <div class="controls"><input type="time" id="schedFrom" value="07:00"> to <input type="time" id="schedTo" value="19:30"></div>
+        </div>
+        <div class="field">
+          <label for="schedDaily">Daily limit</label>
+          <select id="schedDaily">
+            <option value="0">No limit</option><option value="30">30 minutes</option>
+            <option value="45">45 minutes</option><option value="60">1 hour</option>
+            <option value="90">1½ hours</option><option value="120">2 hours</option>
+            <option value="180">3 hours</option><option value="240">4 hours</option>
+          </select>
+        </div>
+        <div class="saved" id="schedSaved"></div>
+        <p class="msg">Changes save by themselves. Outside these times the tablet shows a sleeping moon, and Movies &amp; TV and Dance won't start anything.</p>
+      </section>
 
-    <section class="card">
-      <h2>🕘 History <span id="histKid" class="sub"></span></h2>
-      <div id="history"><p class="msg">Loading…</p></div>
-    </section>
+      <section class="card">
+        <h2>🩺 How it's doing</h2>
+        <dl class="facts" id="system"><dt>Checking…</dt><dd></dd></dl>
+      </section>
 
-    <section class="card">
-      <h2>🩺 Status</h2>
-      <dl class="facts" id="system"><dt>Checking…</dt><dd></dd></dl>
-    </section>
+      <section class="card">
+        <h2>⏻ Power</h2>
+        <div class="buttons">
+          <button id="restartBtn">🔄 Restart</button>
+          <button id="shutdownBtn" class="warn">⏻ Shut down</button>
+        </div>
+        <p class="msg" id="powerMsg">Restart fixes most problems and takes about a minute. After a shut down, it stays
+          off until someone presses its power button.</p>
+      </section>
 
-    <p style="text-align:center"><button id="logoutBtn">Sign out on this device</button></p>
+      <p style="text-align:center"><button id="logoutBtn" class="link">Sign out on this device</button></p>
+    </div>
   </div>
 </main>
+
+<nav class="bottom" id="bottomNav" hidden>
+  <div class="in">
+    <button data-go="home" class="on"><span>🏠</span>Home</button>
+    <button data-go="lists"><span>📋</span>Lists</button>
+    <button data-go="activity"><span>📊</span>Activity</button>
+    <button data-go="settings"><span>⚙️</span>Settings</button>
+  </div>
+</nav>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<dialog id="confirm">
+  <h2 id="confirmTitle"></h2>
+  <p id="confirmText"></p>
+  <div class="buttons">
+    <button id="confirmNo">Cancel</button>
+    <button id="confirmYes" class="primary"></button>
+  </div>
+</dialog>
+
+<div id="offline" hidden>
+  <div class="icon" id="offlineIcon">🔄</div>
+  <h2 id="offlineTitle">Restarting…</h2>
+  <p id="offlineText">This page comes back by itself when the tablet is ready (about a minute).</p>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
 let currentKid = null;
 let kidNames = {};
@@ -281,167 +411,333 @@ async function api(method, path, body) {
   return data;
 }
 
+// ---- little helpers: toast, confirm, a button that shows it's busy ----------------------
+let toastTimer;
+function toast(text, bad) {
+  const t = $("toast");
+  t.textContent = text; t.className = "show" + (bad ? " bad" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.className = "", bad ? 5000 : 2500);
+}
+const oops = (e) => { if (e.message !== "locked") toast(e.message, true); };
+
+function confirmBox(title, text, yes, danger) {
+  return new Promise((resolve) => {
+    const d = $("confirm");
+    $("confirmTitle").textContent = title; $("confirmText").textContent = text;
+    $("confirmYes").textContent = yes; $("confirmYes").className = danger ? "warn" : "primary";
+    const done = (v) => { d.close(); resolve(v); };
+    $("confirmYes").onclick = () => done(true);
+    $("confirmNo").onclick = () => done(false);
+    d.oncancel = () => resolve(false);
+    d.showModal();
+  });
+}
+
+async function busy(button, work) {
+  if (button.disabled) return;
+  button.disabled = true;
+  try { await work(); } catch (e) { oops(e); } finally { button.disabled = false; }
+}
+
+function state(box, kind, icon, text, sub) {
+  box.className = "state " + kind;
+  const body = el("div", "", text);
+  if (sub) body.append(el("small", "", sub));
+  box.replaceChildren(el("span", "icon", icon), body);
+}
+
+// ---- views (bottom tabs) ----------------------------------------------------------------------
+const views = ["home", "lists", "activity", "settings"];
+function go(name) {
+  if (!views.includes(name)) name = "home";
+  for (const v of views) $("view-" + v).hidden = v !== name;
+  document.querySelectorAll("nav.bottom button").forEach((b) => b.classList.toggle("on", b.dataset.go === name));
+  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+  window.scrollTo(0, 0);
+  if (name === "activity") { loadWeek().catch(() => {}); loadHistory().catch(() => {}); }
+  if (name === "settings") { loadSchedule().catch(() => {}); loadSystem().catch(() => {}); }
+  if (name === "lists") showTab(currentTab);
+}
+document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => { e.preventDefault(); go(b.dataset.go); });
+
+// ---- sign in ---------------------------------------------------------------------------------
 function showLogin(msg) {
-  $("app").hidden = true; $("login").hidden = false;
+  $("app").hidden = true; $("bottomNav").hidden = true; $("login").hidden = false;
   $("loginMsg").textContent = msg || ""; $("pin").value = ""; $("pin").focus();
 }
-
-function itemRow(m, action) {
-  const row = document.createElement("div");
-  row.className = "row";
-  if (action.poster) {
-    const img = document.createElement("img");
-    img.loading = "lazy"; img.alt = ""; img.src = "/api/portal/poster/" + encodeURIComponent(m.key);
-    row.append(img);
-  }
-  const t = document.createElement("div");
-  t.className = "title";
-  const kind = {show: "TV show · random episode", netflix: "Netflix"}[m.kind] || "Movie";
-  t.innerHTML = "<div></div><div class='sub'></div>";
-  t.firstChild.textContent = m.title;
-  t.lastChild.textContent = [m.year, kind].filter(Boolean).join(" · ");
-  const b = document.createElement("button");
-  b.textContent = action.label; b.className = action.cls || "";
-  b.onclick = async () => {
-    b.disabled = true;
-    try { await action.run(m); } catch (e) { alert(e.message); b.disabled = false; }
-  };
-  row.append(t, b);
-  return row;
-}
-
-async function refresh() {
-  const s = await api("GET", "status");
-  if (!s.authed) { showLogin(s.pin_set ? "" : "No PIN yet: set one in Movies & TV setup on the tablet."); return; }
-  $("login").hidden = true; $("app").hidden = false;
-  if (!volumeLoaded) {
-    volumeLoaded = true;
-    loadVolume();
-    loadKids().then(() => {
-      loadSchedule().catch(() => {}); loadHistory().catch(() => {}); loadWeek().catch(() => {});
-    }).catch(() => {});
-    loadSystem().catch(() => {});
-  }
-  loadNow().catch(() => {});
-  $("tvline").textContent = s.tv ? "Plays on: " + s.tv : "Movie time on the kids' tablet";
-  $("pauseText").textContent = s.pause_text;
-  $("pauseText").className = "status " + (s.paused ? "paused" : "on");
-  $("resumeBtn").disabled = !s.paused;
-  $("count").textContent = "(" + s.items.length + ")";
-  const items = $("items");
-  items.replaceChildren(...s.items.map((m) => itemRow(m, {
-    poster: true, label: "Remove", cls: "danger",
-    run: async (m) => { await api("DELETE", "items/" + m.key); await refresh(); },
-  })));
-  if (!s.items.length) items.innerHTML = "<p class='msg'>Nothing yet. Search below to add some.</p>";
-}
-
-async function search() {
-  const results = $("results");
-  results.innerHTML = "<p class='msg'>Searching…</p>";
-  try {
-    const r = await api("GET", "library?q=" + encodeURIComponent($("q").value));
-    results.replaceChildren(...r.items.map((m) => itemRow(m, {
-      label: m.chosen ? "Added" : "Add", cls: m.chosen ? "" : "primary",
-      run: async (m) => {
-        if (m.chosen) return;
-        await api("POST", "items/" + m.key);
-        m.chosen = true;
-        await refresh();
-        search();  // keep the results and the search text; just update the buttons
-      },
-    })));
-    if (!r.items.length) results.innerHTML = "<p class='msg'>No matches.</p>";
-  } catch (e) {
-    results.innerHTML = "";
-    if (e.message !== "locked") results.innerHTML = "<p class='msg error'></p>", results.firstChild.textContent = e.message;
-  }
-}
-
-$("loginBtn").onclick = async () => {
-  try { await api("POST", "login", {pin: $("pin").value}); await refresh(); }
-  catch (e) { $("loginMsg").textContent = e.message; }
-};
-$("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
-$("searchBtn").onclick = search;
-$("nfBtn").onclick = async () => {
-  $("nfBtn").disabled = true;
-  try {
-    await api("POST", "netflix", {ref: $("nf").value});
-    $("nf").value = ""; $("nfMsg").textContent = "Added.";
-    await refresh();
-  } catch (e) {
-    if (e.message !== "locked") $("nfMsg").textContent = e.message;
-  }
-  $("nfBtn").disabled = false;
-};
-$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
-// Pause length: 15 minutes to 24 hours, in 15-minute steps.
-function pauseLenText() {
-  const m = Number($("pauseLen").value), h = Math.floor(m / 60), r = m % 60;
-  const len = [h ? h + (h === 1 ? " hour" : " hours") : "", r ? r + " min" : ""].filter(Boolean).join(" ");
-  const end = new Date(Date.now() + m * 60000);
-  const day = end.toDateString() === new Date().toDateString() ? "" : " tomorrow";
-  $("pauseLenText").textContent = `${len} (until ${end.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}${day})`;
-}
-$("pauseLen").addEventListener("input", pauseLenText);
-pauseLenText();
-setInterval(pauseLenText, 30000);
-document.querySelectorAll("[data-pause]").forEach((b) => b.onclick = async () => {
-  const v = b.dataset.pause === "slider" ? $("pauseLen").value : b.dataset.pause;
-  await api("POST", "pause", {minutes: /^\d+$/.test(v) ? Number(v) : v});
+$("loginBtn").onclick = () => busy($("loginBtn"), async () => {
+  try { await api("POST", "login", {pin: $("pin").value}); }
+  catch (e) { $("loginMsg").textContent = e.message; $("pin").select(); return; }
+  started = false;
   await refresh();
 });
-// Tablet volume: read once when the page opens (it asks Android, which takes a moment).
-async function loadVolume() {
-  try {
-    const r = await api("GET", "volume");
-    showVolume(r.percent);
-  } catch (e) {
-    if (e.message !== "locked") $("volText").textContent = "Couldn't reach the tablet";
+$("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
+$("logoutBtn").onclick = async () => { await api("POST", "logout").catch(() => {}); showLogin(); };
+
+// ---- the main refresh (every 30 s) ---------------------------------------------------------
+let started = false;
+async function refresh() {
+  const s = await api("GET", "status");
+  if (!s.authed) { showLogin(s.pin_set ? "" : "There's no PIN yet: set one in Movies & TV setup on the tablet."); return; }
+  $("login").hidden = true; $("app").hidden = false; $("bottomNav").hidden = false;
+  if (!started) {
+    started = true;
+    loadVolume();
+    loadKids().then(() => { loadSchedule().catch(() => {}); go(location.hash.slice(1)); }).catch(() => go("home"));
   }
+  loadNow().catch(() => {});
+  if (!$("view-home").hidden) loadSchedule().catch(() => {});
+  $("tvline").textContent = s.tv ? "📺 TV: " + s.tv : "The kids' tablet";
+  if (s.paused) state($("pauseState"), "off", "⏸", s.pause_text, "Nothing starts on the TV.");
+  else state($("pauseState"), "on", "▶️", "Movie time is on", "The kids can start shows on the TV.");
+  $("pauseChoices").hidden = s.paused;
+  $("resumeBtn").hidden = !s.paused;
+  showItems(s.items);
+}
+
+// ---- kids ----------------------------------------------------------------------------------------
+async function loadKids() {
+  const r = await api("GET", "kids");
+  kidNames = Object.fromEntries(r.kids.map((k) => [k.user, k.name]));
+  if (!currentKid || !kidNames[currentKid]) currentKid = r.kids[0].user;
+  const bar = $("kidBar");
+  bar.hidden = r.kids.length < 2;
+  bar.replaceChildren(...r.kids.map((k) => {
+    const b = el("button", k.user === currentKid ? "on" : "", "🧒 " + k.name);
+    b.onclick = () => { currentKid = k.user; loadKids(); refreshAll(); toast("Showing " + k.name); };
+    return b;
+  }));
+  const who = r.kids.length > 1 ? "· " + kidNames[currentKid] : "";
+  for (const id of ["schedKid", "schedKid2", "histKid", "weekKid"]) $(id).textContent = who;
+}
+async function refreshAll() {
+  await refresh().catch(() => {});
+  loadSchedule().catch(() => {});
+  if (!$("view-activity").hidden) { loadHistory().catch(() => {}); loadWeek().catch(() => {}); }
+  if (!$("view-lists").hidden) showTab(currentTab);
+}
+
+// ---- tablet time -----------------------------------------------------------------------------
+const clockText = (t) => new Date(t * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+const hm = (m) => m >= 60 ? Math.floor(m / 60) + " h" + (m % 60 ? " " + m % 60 + " min" : "") : m + " min";
+let scheduleLoaded = false;
+async function loadSchedule() {
+  const r = await api("GET", "schedule");
+  if (!scheduleEditing) {
+    $("schedOn").checked = r.schedule.enabled;
+    $("schedFrom").value = r.schedule.from;
+    $("schedTo").value = r.schedule.to;
+    $("schedDaily").value = String(r.schedule.daily);
+    $("hoursField").hidden = !r.schedule.enabled;
+    scheduleLoaded = true;
+  }
+  const used = "Used today: " + hm(r.used_today);
+  if (!r.allowed) state($("schedStatus"), "off", "🌙", "Sleeping", [r.message, used].filter(Boolean).join(" · "));
+  else if (r.extra_until > Date.now() / 1000) state($("schedStatus"), "on", "⭐", "Extra time until " + clockText(r.extra_until), used);
+  else if (r.minutes_left !== null) state($("schedStatus"), r.minutes_left <= 10 ? "wait" : "on", "☀️", hm(r.minutes_left) + " left today", used);
+  else state($("schedStatus"), "on", "☀️", "Awake (no limits)", used);
+}
+let scheduleEditing = false, saveTimer;
+function saveSchedule() {
+  if (!scheduleLoaded) return;
+  $("hoursField").hidden = !$("schedOn").checked;
+  scheduleEditing = true;
+  clearTimeout(saveTimer);
+  $("schedSaved").textContent = "Saving…";
+  saveTimer = setTimeout(async () => {
+    try {
+      await api("POST", "schedule", {enabled: $("schedOn").checked, from: $("schedFrom").value,
+                                     to: $("schedTo").value, daily: Number($("schedDaily").value)});
+      $("schedSaved").textContent = "Saved ✓";
+      setTimeout(() => { if ($("schedSaved").textContent === "Saved ✓") $("schedSaved").textContent = ""; }, 2500);
+    } catch (e) { $("schedSaved").textContent = ""; oops(e); }
+    scheduleEditing = false;
+    loadSchedule().catch(() => {});
+  }, 600);
+}
+for (const id of ["schedOn", "schedFrom", "schedTo", "schedDaily"]) $(id).addEventListener("change", saveSchedule);
+for (const [id, minutes] of [["extra30", 30], ["extra60", 60]]) {
+  $(id).onclick = () => busy($(id), async () => { await api("POST", "extra", {minutes}); await loadSchedule(); toast("Added " + hm(minutes) + " ⭐"); });
+}
+$("sleepNow").onclick = async () => {
+  if (!await confirmBox("Put the tablet to sleep?", "It shows the sleeping moon right away, until the next allowed time or until you add time.", "🌙 Sleep now")) return;
+  busy($("sleepNow"), async () => { await api("POST", "sleep"); await loadSchedule(); toast("Good night 🌙"); });
+};
+
+// ---- movie time (pause) --------------------------------------------------------------------
+document.querySelectorAll("[data-pause]").forEach((b) => b.onclick = () => busy(b, async () => {
+  const v = b.dataset.pause;
+  await api("POST", "pause", {minutes: /^\d+$/.test(v) ? Number(v) : v});
+  await refresh();
+  toast("Movie time paused ⏸");
+}));
+$("resumeBtn").onclick = () => busy($("resumeBtn"), async () => {
+  await api("POST", "pause", {minutes: 0}); await refresh(); toast("Movie time is back on ▶️");
+});
+
+// ---- on the TV now -----------------------------------------------------------------------------
+const ago = (t) => {
+  const m = Math.round((Date.now() / 1000 - t) / 60);
+  return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago";
+};
+async function loadNow() {
+  const r = await api("GET", "now");
+  const last = r.last ? "Last pick: " + r.last.title + (r.last.kid_name ? " (" + r.last.kid_name + ")" : "") + ", " + ago(r.last.at) : "";
+  let on = false;
+  if (!r.tv) state($("nowState"), "info", "📺", "No TV set up yet", last || "Choose one in Movies & TV setup on the tablet.");
+  else if (r.tv.power !== "PowerOn") state($("nowState"), "info", "💤", r.tv.name + " is off", last);
+  else {
+    on = true;
+    const what = r.tv.app || "Home screen";
+    const how = r.tv.state === "play" ? " · playing" : r.tv.state === "pause" ? " · paused" : "";
+    state($("nowState"), r.tv.state === "play" ? "on" : "info", r.tv.state === "play" ? "▶️" : "📺", what + how, last);
+  }
+  $("stopBtn").hidden = !on;
+}
+$("stopBtn").onclick = () => busy($("stopBtn"), async () => {
+  const r = await api("POST", "tv-stop");
+  if (!r.ok) throw new Error(r.message || "The TV didn't answer");
+  toast("Stopped ⏹");
+  setTimeout(() => loadNow().catch(() => {}), 2000);
+});
+
+// ---- volume ------------------------------------------------------------------------------------
+async function loadVolume() {
+  try { showVolume((await api("GET", "volume")).percent); }
+  catch (e) { if (e.message !== "locked") { $("volText").textContent = "–"; $("volMsg").textContent = "Couldn't reach the tablet."; } }
 }
 function showVolume(percent) {
   const ok = Number.isInteger(percent);
   $("vol").disabled = !ok;
   if (ok) $("vol").value = percent;
-  $("volText").textContent = ok ? percent + "%" : "The tablet isn't answering (is it on?)";
+  $("volText").textContent = ok ? percent + "%" : "–";
+  $("volMsg").textContent = ok ? "The kids can't change it on the tablet." : "The tablet isn't answering (is it on, with a kid logged in?).";
 }
-$("vol").addEventListener("input", () => { $("volText").textContent = $("vol").value + "%…"; });
+$("vol").addEventListener("input", () => { $("volText").textContent = $("vol").value + "%"; });
 $("vol").addEventListener("change", async () => {
   $("vol").disabled = true;
-  try { showVolume((await api("POST", "volume", {percent: Number($("vol").value)})).percent); }
-  catch (e) { $("volText").textContent = e.message; $("vol").disabled = false; }
+  try { showVolume((await api("POST", "volume", {percent: Number($("vol").value)})).percent); toast("Volume set 🔊"); }
+  catch (e) { oops(e); $("vol").disabled = false; }
 });
-let volumeLoaded = false;
 
-// ---- tabs ------------------------------------------------------------------
+// ---- lists: one row ------------------------------------------------------------------------------
+function listRow(imgSrc, wide, title, sub, button) {
+  const row = el("div", "row");
+  if (imgSrc) {
+    const img = el("img", wide ? "wide" : "");
+    img.loading = "lazy"; img.alt = ""; img.src = imgSrc;
+    img.onerror = () => img.style.visibility = "hidden";
+    row.append(img);
+  }
+  const t = el("div", "title");
+  t.append(el("div", "", title), el("div", "sub", sub));
+  row.append(t, button);
+  return row;
+}
+function addButton(chosen, add) {
+  const b = el("button", chosen ? "added" : "primary", chosen ? "✓ Added" : "＋ Add");
+  b.disabled = chosen;
+  b.onclick = () => busy(b, async () => { await add(); b.className = "added"; b.textContent = "✓ Added"; b.disabled = true; });
+  return b;
+}
+function removeButton(title, remove) {
+  const b = el("button", "link", "Remove");
+  b.onclick = async () => {
+    if (!await confirmBox("Remove “" + title + "”?", "The kids won't see it anymore. You can add it back any time.", "Remove", true)) return;
+    busy(b, async () => { await remove(); toast("Removed"); });
+  };
+  return b;
+}
+
+// ---- Movies & TV -------------------------------------------------------------------------------
+const kindText = (m) => [m.year, {show: "TV show · random episode", netflix: "Netflix (TV only)"}[m.kind] || "Movie"].filter(Boolean).join(" · ");
+function showItems(items) {
+  $("count").textContent = "(" + items.length + ")";
+  if (!items.length) { $("items").replaceChildren(el("p", "msg", "Nothing yet. Search above to add some.")); return; }
+  $("items").replaceChildren(...items.map((m) => listRow("/api/portal/poster/" + encodeURIComponent(m.key), false, m.title, kindText(m),
+    removeButton(m.title, async () => { await api("DELETE", "items/" + m.key); await refresh(); }))));
+}
+async function search() {
+  const results = $("results");
+  results.replaceChildren(el("p", "msg", "Searching…"));
+  try {
+    const r = await api("GET", "library?q=" + encodeURIComponent($("q").value));
+    if (!r.items.length) { results.replaceChildren(el("p", "msg", "No matches. Try a shorter word.")); return; }
+    results.replaceChildren(...r.items.map((m) => listRow(null, false, m.title, kindText(m),
+      addButton(m.chosen, async () => { await api("POST", "items/" + m.key); toast("Added “" + m.title + "”"); refresh().catch(() => {}); }))));
+  } catch (e) {
+    results.replaceChildren(); if (e.message !== "locked") results.append(el("p", "msg error", e.message));
+  }
+}
+$("searchBtn").onclick = search;
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+$("nfBtn").onclick = () => busy($("nfBtn"), async () => {
+  if (!$("nf").value.trim()) { toast("Paste a Netflix link first", true); return; }
+  $("nfMsg").textContent = "Looking it up…";
+  try { await api("POST", "netflix", {ref: $("nf").value}); }
+  catch (e) { $("nfMsg").textContent = e.message; return; }
+  $("nf").value = ""; $("nfMsg").textContent = "Added ✓"; toast("Added from Netflix");
+  await refresh();
+});
+
+// ---- lists: segments -----------------------------------------------------------------------------
+let currentTab = "movies";
 function showTab(name) {
-  $("tabMovies").hidden = name !== "movies";
-  $("tabDance").hidden = name !== "dance";
-  $("tabColor").hidden = name !== "color";
-  $("tabMoviesBtn").classList.toggle("on", name === "movies");
-  $("tabDanceBtn").classList.toggle("on", name === "dance");
-  $("tabColorBtn").classList.toggle("on", name === "color");
-  if (name === "dance") refreshDance();
+  currentTab = name;
+  for (const [tab, box, btn] of [["movies", "tabMovies", "tabMoviesBtn"], ["dance", "tabDance", "tabDanceBtn"], ["color", "tabColor", "tabColorBtn"]]) {
+    $(box).hidden = tab !== name;
+    $(btn).classList.toggle("on", tab === name);
+  }
+  if (name === "dance") refreshDance().catch(() => {});
   if (name === "color") refreshColoring().catch(() => {});
 }
 $("tabMoviesBtn").onclick = () => showTab("movies");
 $("tabDanceBtn").onclick = () => showTab("dance");
 $("tabColorBtn").onclick = () => showTab("color");
 
-// ---- Coloring pages -----------------------------------------------------------------
+// ---- Dance -------------------------------------------------------------------------------------
+const minutes = (sec) => Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+const thumb = (id) => "/api/portal/dance-thumb/" + encodeURIComponent(id);
+async function refreshDance() {
+  const r = await api("GET", "dance");
+  $("danceCount").textContent = "(" + r.songs.length + ")";
+  if (!r.songs.length) { $("danceItems").replaceChildren(el("p", "msg", "No songs yet. Search above to add some.")); return; }
+  $("danceItems").replaceChildren(...r.songs.map((song) => listRow(thumb(song.id), true, song.title, song.duration ? minutes(song.duration) : "",
+    removeButton(song.title, async () => { await api("DELETE", "dance/" + song.id); await refreshDance(); danceSearch(true); }))));
+}
+let danceSearched = false;
+async function danceSearch(quiet) {
+  if (quiet && !danceSearched) return;
+  danceSearched = true;
+  const box = $("dResults");
+  if (!quiet) box.replaceChildren(el("p", "msg", "Looking at the Danny Go! channel… (the first time takes a few seconds)"));
+  try {
+    const r = await api("GET", "dance-library?q=" + encodeURIComponent($("dq").value));
+    if (!r.songs.length) { box.replaceChildren(el("p", "msg", "No matches.")); return; }
+    box.replaceChildren(...r.songs.map((song) => listRow(thumb(song.id), true, song.title, song.duration ? minutes(song.duration) : "",
+      addButton(song.chosen, async () => { await api("POST", "dance/" + song.id); toast("Added “" + song.title + "”"); refreshDance().catch(() => {}); }))));
+  } catch (e) {
+    if (e.message !== "locked") box.replaceChildren(el("p", "msg error", e.message));
+  }
+}
+$("dSearchBtn").onclick = () => danceSearch(false);
+$("dq").addEventListener("keydown", (e) => { if (e.key === "Enter") danceSearch(false); });
+$("dLinkBtn").onclick = () => busy($("dLinkBtn"), async () => {
+  if (!$("dLink").value.trim()) { toast("Paste a YouTube link first", true); return; }
+  try { await api("POST", "dance-link", {ref: $("dLink").value}); }
+  catch (e) { $("dLinkMsg").textContent = e.message; return; }
+  $("dLink").value = ""; $("dLinkMsg").textContent = "Added ✓"; toast("Song added 💃");
+  await refreshDance(); danceSearch(true);
+});
+
+// ---- Coloring pages ------------------------------------------------------------------------------
 function pageTile(p, src, onTap, removable) {
-  const tile = document.createElement("div");
-  tile.className = "page" + (p.chosen ? " chosen" : "");
-  const img = document.createElement("img");
-  img.loading = "lazy"; img.alt = ""; img.src = src;
-  const name = document.createElement("div");
-  name.textContent = p.title;
-  tile.append(img, name);
+  const tile = el("div", "page" + (p.chosen ? " chosen" : ""));
+  const img = el("img"); img.loading = "lazy"; img.alt = ""; img.src = src;
+  tile.append(img, el("div", "", p.title));
   if (removable) {
-    const x = document.createElement("button");
-    x.className = "x"; x.textContent = "✕"; x.title = "Take it off";
+    const x = el("button", "x", "✕"); x.title = "Take it off"; x.setAttribute("aria-label", "Remove " + p.title);
     x.onclick = (ev) => { ev.stopPropagation(); onTap(tile); };
     tile.append(x);
   } else if (onTap) {
@@ -451,50 +747,49 @@ function pageTile(p, src, onTap, removable) {
 }
 async function refreshColoring() {
   const r = await api("GET", "coloring");
-  $("colorCount").textContent = "· " + r.pages.length;
+  $("colorCount").textContent = "(" + r.pages.length + ")";
   const box = $("colorItems");
-  if (!r.pages.length) { box.innerHTML = "<p class='msg'>None yet: add some below.</p>"; return; }
+  if (!r.pages.length) { box.replaceChildren(el("p", "msg", "None yet: add some above.")); return; }
   box.replaceChildren(...r.pages.map((p) => pageTile(p, "/api/portal/coloring-page/" + p.id, async (tile) => {
+    if (!await confirmBox("Remove “" + p.title + "”?", "It comes off the Paint app for all the kids.", "Remove", true)) return;
     tile.style.opacity = .4;
-    try { await api("DELETE", "coloring/" + p.id); } catch (e) { alert(e.message); }
+    try { await api("DELETE", "coloring/" + p.id); toast("Removed"); } catch (e) { oops(e); }
     refreshColoring().catch(() => {});
   }, true)));
 }
 async function colorSearch() {
   const q = $("cq").value.trim();
   const box = $("cResults");
-  if (!q) return;
-  box.innerHTML = "<p class='msg'>Searching…</p>";
+  if (!q) { toast("Type what to look for, like “cat”", true); return; }
+  box.replaceChildren(el("p", "msg", "Searching…"));
   try {
     const r = await api("GET", "coloring-search?q=" + encodeURIComponent(q));
-    if (!r.pages.length) { box.innerHTML = "<p class='msg'>Nothing found. Try a simpler word.</p>"; return; }
+    if (!r.pages.length) { box.replaceChildren(el("p", "msg", "Nothing found. Try a simpler word.")); return; }
     box.replaceChildren(...r.pages.map((p) => pageTile(p, "/api/portal/coloring-thumb/" + encodeURIComponent(p.id), async (tile) => {
       if (tile.classList.contains("chosen") || tile.dataset.busy) return;
       tile.dataset.busy = 1; tile.style.opacity = .5;
       try {
         await api("POST", "coloring/" + p.id, {title: p.title});
-        tile.classList.add("chosen");
+        tile.classList.add("chosen"); toast("Added “" + p.title + "” 🖍️");
         refreshColoring().catch(() => {});
-      } catch (e) { if (e.message !== "locked") alert(e.message); }
+      } catch (e) { oops(e); }
       tile.style.opacity = 1; delete tile.dataset.busy;
     })));
   } catch (e) {
-    if (e.message === "locked") return;
-    const p = document.createElement("p"); p.className = "msg error"; p.textContent = e.message;
-    box.replaceChildren(p);
+    if (e.message !== "locked") box.replaceChildren(el("p", "msg error", e.message));
   }
 }
-$("cUrlBtn").onclick = async () => {
+$("cSearchBtn").onclick = colorSearch;
+$("cq").onkeydown = (e) => { if (e.key === "Enter") colorSearch(); };
+$("cUrlBtn").onclick = () => busy($("cUrlBtn"), async () => {
   const url = $("cUrl").value.trim();
-  if (!url) return;
-  $("cUrlBtn").disabled = true; $("cOwnMsg").textContent = "Getting the picture…";
-  try {
-    await api("POST", "coloring-url", {url});
-    $("cUrl").value = ""; $("cOwnMsg").textContent = "Added ✓";
-    refreshColoring().catch(() => {});
-  } catch (e) { if (e.message !== "locked") $("cOwnMsg").textContent = e.message; }
-  $("cUrlBtn").disabled = false;
-};
+  if (!url) { toast("Paste a link first", true); return; }
+  $("cOwnMsg").textContent = "Getting the picture…";
+  try { await api("POST", "coloring-url", {url}); }
+  catch (e) { $("cOwnMsg").textContent = e.message; return; }
+  $("cUrl").value = ""; $("cOwnMsg").textContent = "Added ✓"; toast("Page added 🖍️");
+  refreshColoring().catch(() => {});
+});
 $("cFile").onchange = async () => {
   const files = [...$("cFile").files];
   let added = 0;
@@ -513,260 +808,134 @@ $("cFile").onchange = async () => {
     } catch (e) { $("cOwnMsg").textContent = e.message; $("cFile").value = ""; refreshColoring().catch(() => {}); return; }
   }
   $("cOwnMsg").textContent = "Added " + added + (added === 1 ? " page ✓" : " pages ✓");
+  toast($("cOwnMsg").textContent);
   $("cFile").value = "";
   refreshColoring().catch(() => {});
 };
-$("cSearchBtn").onclick = colorSearch;
-$("cq").onkeydown = (e) => { if (e.key === "Enter") colorSearch(); };
 
-// ---- this week ---------------------------------------------------------------------------
-const hm = (m) => m >= 60 ? Math.floor(m / 60) + " h " + (m % 60 ? m % 60 + " min" : "") : m + " min";
+// ---- activity: this week --------------------------------------------------------------------
 async function loadWeek() {
   const r = await api("GET", "week");
-  const box = $("week");
   const most = Math.max(30, ...r.days.map((d) => d.minutes));
-  const bars = document.createElement("div"); bars.className = "bars";
-  const labels = document.createElement("div"); labels.className = "barlabels";
+  const bars = el("div", "bars"), labels = el("div", "barlabels");
   r.days.forEach((d, i) => {
-    const bar = document.createElement("div");
-    bar.className = "bar" + (i === r.days.length - 1 ? " today" : "");
+    const today = i === r.days.length - 1;
+    const bar = el("div", "bar" + (today ? " today" : ""));
     bar.style.height = (100 * d.minutes / most) + "%";
-    bar.title = d.minutes + " min";
+    bar.title = hm(d.minutes);
     bars.append(bar);
-    const day = new Date(d.date + "T12:00:00");
-    const l = document.createElement("div");
-    l.innerHTML = "<b></b><span></span>";
-    l.firstChild.textContent = d.minutes;
-    l.lastChild.textContent = i === r.days.length - 1 ? "Today" : day.toLocaleDateString([], {weekday: "short"});
+    const l = el("div");
+    l.append(el("b", "", d.minutes), el("span", "", today ? "Today" : new Date(d.date + "T12:00:00").toLocaleDateString([], {weekday: "short"})));
     labels.append(l);
   });
-  const summary = document.createElement("p");
-  summary.className = "msg";
-  const avg = Math.round(r.total / 7);
-  let line = "Tablet time: " + hm(r.total) + " this week (about " + hm(avg) + " a day)";
+  let line = hm(r.total) + " on the tablet this week (about " + hm(Math.round(r.total / 7)) + " a day)";
   if (r.prev_total) {
     const diff = r.total - r.prev_total;
-    line += diff === 0 ? ", same as last week" : ", " + hm(Math.abs(diff)) + (diff > 0 ? " more" : " less") + " than last week";
+    line += diff === 0 ? ", the same as last week" : ", " + hm(Math.abs(diff)) + (diff > 0 ? " more" : " less") + " than last week";
   }
-  summary.textContent = line + ". Bars are minutes per day.";
-  const tops = document.createElement("div"); tops.className = "tops";
   const list = (title, items, extra) => {
-    const col = document.createElement("div");
-    col.innerHTML = "<h3></h3>";
-    col.firstChild.textContent = title;
-    if (!items.length && !extra) { const p = document.createElement("p"); p.className = "msg"; p.textContent = "Nothing yet."; col.append(p); }
-    const ol = document.createElement("ol");
-    for (const it of items) { const li = document.createElement("li"); li.textContent = it.title + (it.count > 1 ? " ×" + it.count : ""); ol.append(li); }
+    const col = el("div");
+    col.append(el("h3", "", title));
+    if (!items.length && !extra) col.append(el("p", "msg", "Nothing yet."));
+    const ol = el("ol");
+    for (const it of items) ol.append(el("li", "", it.title + (it.count > 1 ? " ×" + it.count : "")));
     col.append(ol);
-    if (extra) { const p = document.createElement("p"); p.className = "msg"; p.textContent = extra; col.append(p); }
+    if (extra) col.append(el("p", "msg", extra));
     return col;
   };
-  tops.append(list("📺 Watched most", r.watched, r.dances ? "💃 Dance: " + r.dances + (r.dances > 1 ? " times" : " time") : ""),
+  const tops = el("div", "tops");
+  tops.append(list("📺 Watched most", r.watched, r.dances ? "💃 Danced " + r.dances + (r.dances > 1 ? " times" : " time") : ""),
               list("📱 Apps opened most", r.apps));
-  box.replaceChildren(bars, labels, summary, tops);
+  $("week").replaceChildren(bars, labels, el("p", "msg", line + ". Bars are minutes per day."), tops);
 }
 
-// ---- Dance -------------------------------------------------------------------
-const minutes = (sec) => Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
-
-function songRow(song, action) {
-  const row = document.createElement("div");
-  row.className = "row";
-  const img = document.createElement("img");
-  img.className = "wide"; img.loading = "lazy"; img.alt = "";
-  img.src = "/api/portal/dance-thumb/" + encodeURIComponent(song.id);
-  const t = document.createElement("div");
-  t.className = "title";
-  t.innerHTML = "<div></div><div class='sub'></div>";
-  t.firstChild.textContent = song.title;
-  t.lastChild.textContent = song.duration ? minutes(song.duration) : "";
-  const b = document.createElement("button");
-  b.textContent = action.label; b.className = action.cls || "";
-  b.disabled = !!action.disabled;
-  b.onclick = async () => {
-    b.disabled = true;
-    try { await action.run(song); } catch (e) { alert(e.message); b.disabled = false; }
-  };
-  row.append(img, t, b);
-  return row;
-}
-
-async function refreshDance() {
-  const r = await api("GET", "dance");
-  $("danceCount").textContent = "(" + r.songs.length + ")";
-  $("danceItems").replaceChildren(...r.songs.map((song) => songRow(song, {
-    label: "Remove", cls: "danger",
-    run: async (song) => { await api("DELETE", "dance/" + song.id); await refreshDance(); danceSearch(true); },
-  })));
-  if (!r.songs.length) $("danceItems").innerHTML = "<p class='msg'>No songs yet. Add some below.</p>";
-}
-
-let danceSearched = false;
-async function danceSearch(quiet) {
-  if (quiet && !danceSearched) return;
-  danceSearched = true;
-  const box = $("dResults");
-  if (!quiet) box.innerHTML = "<p class='msg'>Looking at the Danny Go! channel… (the first time takes a few seconds)</p>";
-  try {
-    const r = await api("GET", "dance-library?q=" + encodeURIComponent($("dq").value));
-    box.replaceChildren(...r.songs.map((song) => songRow(song, {
-      label: song.chosen ? "Added" : "Add", cls: song.chosen ? "" : "primary", disabled: song.chosen,
-      run: async (song) => { await api("POST", "dance/" + song.id); await refreshDance(); danceSearch(true); },
-    })));
-    if (!r.songs.length) box.innerHTML = "<p class='msg'>No matches.</p>";
-  } catch (e) {
-    if (e.message !== "locked") { box.innerHTML = "<p class='msg error'></p>"; box.firstChild.textContent = e.message; }
-  }
-}
-$("dSearchBtn").onclick = () => danceSearch(false);
-$("dq").addEventListener("keydown", (e) => { if (e.key === "Enter") danceSearch(false); });
-$("dLinkBtn").onclick = async () => {
-  $("dLinkBtn").disabled = true;
-  try {
-    await api("POST", "dance-link", {ref: $("dLink").value});
-    $("dLink").value = ""; $("dLinkMsg").textContent = "Added.";
-    await refreshDance(); danceSearch(true);
-  } catch (e) {
-    if (e.message !== "locked") $("dLinkMsg").textContent = e.message;
-  }
-  $("dLinkBtn").disabled = false;
-};
-
-// ---- kids ----------------------------------------------------------------------
-async function loadKids() {
-  const r = await api("GET", "kids");
-  kidNames = Object.fromEntries(r.kids.map((k) => [k.user, k.name]));
-  if (!currentKid || !kidNames[currentKid]) currentKid = r.kids[0].user;
-  const bar = $("kidBar");
-  bar.hidden = r.kids.length < 2;
-  bar.replaceChildren(...r.kids.map((k) => {
-    const b = document.createElement("button");
-    b.textContent = "🧒 " + k.name;
-    b.className = k.user === currentKid ? "on" : "";
-    b.onclick = () => { currentKid = k.user; loadKids(); refreshAll(); };
-    return b;
-  }));
-  for (const id of ["schedKid", "histKid", "weekKid"]) $(id).textContent = r.kids.length > 1 ? "· " + kidNames[currentKid] : "";
-}
-async function refreshAll() {
-  await refresh().catch(() => {});
-  if (!$("tabDance").hidden) refreshDance().catch(() => {});
-  loadSchedule().catch(() => {});
-  loadHistory().catch(() => {});
-  loadWeek().catch(() => {});
-  if (!$("tabColor").hidden) refreshColoring().catch(() => {});
-}
-
-// ---- on the TV now -----------------------------------------------------------------
-const ago = (t) => {
-  const m = Math.round((Date.now() / 1000 - t) / 60);
-  return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago";
-};
-async function loadNow() {
-  const r = await api("GET", "now");
-  const parts = [];
-  if (!r.tv) parts.push("No TV chosen yet.");
-  else if (r.tv.power !== "PowerOn") parts.push(r.tv.name + " is off.");
-  else {
-    let line = r.tv.name + ": " + (r.tv.app || "home screen");
-    if (r.tv.state === "play") line += " · playing";
-    else if (r.tv.state === "pause") line += " · paused";
-    parts.push(line);
-  }
-  if (r.last) parts.push("Last picked on the tablet: " + r.last.title + (r.last.kid_name ? " (" + r.last.kid_name + ")" : "") + ", " + ago(r.last.at));
-  $("nowText").textContent = parts.join("\n");
-  $("nowText").style.whiteSpace = "pre-line";
-  $("stopBtn").disabled = !r.tv || r.tv.power !== "PowerOn";
-}
-$("stopBtn").onclick = async () => {
-  $("stopBtn").disabled = true;
-  try { const r = await api("POST", "tv-stop"); if (!r.ok) alert(r.message); } catch (e) { alert(e.message); }
-  setTimeout(() => loadNow().catch(() => {}), 2000);
-};
-
-// ---- tablet time ---------------------------------------------------------------------
-const clockText = (t) => new Date(t * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
-async function loadSchedule() {
-  const r = await api("GET", "schedule");
-  $("schedOn").checked = r.schedule.enabled;
-  $("schedFrom").value = r.schedule.from;
-  $("schedTo").value = r.schedule.to;
-  $("schedDaily").value = String(r.schedule.daily);
-  let text;
-  if (!r.allowed) text = "🌙 Sleeping. " + r.message;
-  else if (r.extra_until > Date.now() / 1000) text = "Extra time until " + clockText(r.extra_until);
-  else if (r.minutes_left !== null) text = "On: " + r.minutes_left + " min left";
-  else text = "On (no limits)";
-  $("schedStatus").textContent = text + " · used today: " + r.used_today + " min";
-  $("schedStatus").className = "status " + (r.allowed ? "on" : "paused");
-}
-$("schedSave").onclick = async () => {
-  try {
-    await api("POST", "schedule", {enabled: $("schedOn").checked, from: $("schedFrom").value,
-                                   to: $("schedTo").value, daily: Number($("schedDaily").value)});
-    await loadSchedule();
-  } catch (e) { if (e.message !== "locked") alert(e.message); }
-};
-$("schedOn").onchange = () => $("schedSave").click();
-for (const [id, minutes] of [["extra30", 30], ["extra60", 60]]) {
-  $(id).onclick = async () => { await api("POST", "extra", {minutes}); await loadSchedule(); };
-}
-$("sleepNow").onclick = async () => { await api("POST", "sleep"); await loadSchedule(); };
-
-// ---- history ---------------------------------------------------------------------------
+// ---- activity: history ----------------------------------------------------------------------
 const kindIcon = {movie: "🎬", show: "📺", netflix: "📺", dance: "💃", app: "📱"};
 async function loadHistory() {
   const r = await api("GET", "history");
   const box = $("history");
-  if (!r.events.length) { box.innerHTML = "<p class='msg'>Nothing yet.</p>"; return; }
+  if (!r.events.length) { box.replaceChildren(el("p", "msg", "Nothing yet.")); return; }
   let lastDay = "";
   const rows = [];
   for (const e of r.events.slice(0, 60)) {
     const d = new Date(e.t * 1000);
-    const day = d.toLocaleDateString([], {weekday: "long", month: "short", day: "numeric"});
-    if (day !== lastDay) {
-      const h = document.createElement("div");
-      h.className = "msg"; h.style.fontWeight = "700"; h.style.marginTop = "10px"; h.textContent = day;
-      rows.push(h); lastDay = day;
-    }
-    const row = document.createElement("div");
-    row.className = "event";
-    row.innerHTML = "<span class='when'></span><span></span>";
-    row.firstChild.textContent = d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
-    row.lastChild.textContent = (kindIcon[e.kind] || "•") + " " + e.title;
+    const day = d.toDateString() === new Date().toDateString() ? "Today"
+      : d.toLocaleDateString([], {weekday: "long", month: "short", day: "numeric"});
+    if (day !== lastDay) { rows.push(el("div", "day", day)); lastDay = day; }
+    const row = el("div", "event");
+    row.append(el("span", "when", d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})),
+               el("span", "", (kindIcon[e.kind] || "•") + " " + e.title));
     rows.push(row);
   }
   box.replaceChildren(...rows);
 }
 
-// ---- status ------------------------------------------------------------------------------
+// ---- settings: how it's doing -------------------------------------------------------------
 async function loadSystem() {
   const r = await api("GET", "system");
   const facts = [];
   const add = (label, text, good) => facts.push([label, text, good]);
-  add("TV", r.tv.power === null ? "can't find it on the network" : (r.tv.name || "TV") + (r.tv.power === "PowerOn" ? " · on" : " · off (standby)"), r.tv.power !== null);
-  add("Plex", !r.plex.linked ? "not linked" : (r.plex.server || "server") + (r.plex.reachable ? " · reachable" : " · NOT reachable"), r.plex.linked && r.plex.reachable);
-  add("Updates", r.update ? r.update.result.replace("-", " ") + " · " + new Date(r.update.at * 1000).toLocaleString() + " (" + r.update.commit + ")" : "no record yet", !r.update || r.update.result !== "stage-failed");
+  add("On the tablet", r.kid_on_screen ? "🧒 " + r.kid_on_screen : "Nobody (login screen or parent)", true);
+  add("TV", r.tv.power === null ? "Can't find it on the network" : (r.tv.name || "TV") + (r.tv.power === "PowerOn" ? " · on" : " · off"), r.tv.power !== null);
+  add("Plex", !r.plex.linked ? "Not linked" : (r.plex.server || "Server") + (r.plex.reachable ? " · OK" : " · can't reach it"), r.plex.linked && r.plex.reachable);
+  const upWords = {"up-to-date": "Up to date", "updated": "Updated", "stage-failed": "An update step failed (it retries by itself)"};
+  add("Updates", r.update ? (upWords[r.update.result] || r.update.result.replace(/-/g, " ")) + " · " + new Date(r.update.at * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"})
+      : "No record yet", !r.update || r.update.result !== "stage-failed");
   if (r.android_fix) {
-    const f = r.android_fix, fixWords = {"media-fixed": "fixed the video decoder", "media-failed": "video decoder fix didn't work",
-      "restarting": "restarted Android", "restart-failed": "Android restart FAILED"};
-    add("Automatic fixes", (fixWords[f.result] || f.result.replace(/-/g, " ")) + " for " + f.app + " · "
-        + new Date(f.at * 1000).toLocaleString(), f.result !== "restart-failed");
+    const f = r.android_fix, fixWords = {"media-fixed": "Fixed the video player", "media-failed": "Video player fix didn't work",
+      "restarting": "Restarted Android", "restart-failed": "Android restart FAILED"};
+    add("Auto-fix", (fixWords[f.result] || f.result.replace(/-/g, " ")) + " (" + f.app + ") · "
+        + new Date(f.at * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"}), f.result !== "restart-failed");
   }
-  add("Disk", r.disk.free_gb + " GB free of " + r.disk.total_gb + " GB", r.disk.free_gb > 5);
+  add("Storage", r.disk.free_gb + " GB free of " + r.disk.total_gb + " GB", r.disk.free_gb > 5);
   add("Running for", r.uptime_hours < 48 ? r.uptime_hours + " hours" : Math.round(r.uptime_hours / 24) + " days", true);
-  add("On the tablet now", r.kid_on_screen || "nobody (login screen or parent)", true);
-  $("system").replaceChildren(...facts.flatMap(([label, text, good]) => {
-    const dt = document.createElement("dt"); dt.textContent = label;
-    const dd = document.createElement("dd"); dd.textContent = text; dd.className = good ? "" : "bad";
-    return [dt, dd];
-  }));
+  $("system").replaceChildren(...facts.flatMap(([label, text, good]) => [el("dt", "", label), el("dd", good ? "" : "bad", text)]));
 }
 
-$("logoutBtn").onclick = async () => { await api("POST", "logout"); showLogin(); };
+// ---- settings: power ---------------------------------------------------------------------------
+async function power(action) {
+  const restart = action === "restart";
+  const ok = await confirmBox(restart ? "Restart the tablet?" : "Shut down the tablet?",
+    restart ? "Whatever is on the tablet stops. It's back by itself in about a minute."
+            : "It turns off completely. To turn it back on, someone has to press its power button.",
+    restart ? "🔄 Restart" : "⏻ Shut down", !restart);
+  if (!ok) return;
+  const btn = $(restart ? "restartBtn" : "shutdownBtn");
+  await busy(btn, async () => {
+    const r = await api("POST", "power", {action});
+    if (r.result === "waiting-for-update") {
+      $("powerMsg").textContent = "It's finishing an update first, then it will " + (restart ? "restart." : "shut down.");
+      toast("Finishing an update first…");
+    }
+    offline(restart);
+  });
+}
+$("restartBtn").onclick = () => power("restart");
+$("shutdownBtn").onclick = () => power("shutdown");
 
+function offline(restart) {
+  $("offline").hidden = false;
+  $("offlineIcon").textContent = restart ? "🔄" : "⏻";
+  $("offlineTitle").textContent = restart ? "Restarting…" : "Shutting down…";
+  $("offlineText").textContent = restart ? "This page comes back by itself when the tablet is ready (about a minute)."
+    : "The tablet is turning off. Press its power button to turn it back on.";
+  if (!restart) { setTimeout(() => { $("offlineTitle").textContent = "The tablet is off"; }, 20000); return; }
+  // Wait for it to go away, then for it to come back.
+  let wentAway = false;
+  const check = async () => {
+    try {
+      const res = await fetch("/api/portal/status", {credentials: "same-origin", cache: "no-store"});
+      if (res.ok && wentAway) { location.reload(); return; }
+    } catch (e) { wentAway = true; }
+    setTimeout(check, 3000);
+  };
+  setTimeout(check, 8000);
+}
+
+window.addEventListener("hashchange", () => { if (!$("app").hidden) go(location.hash.slice(1)); });
 refresh().catch(() => {});
-setInterval(() => { if (!$("app").hidden) refresh().catch(() => {}); }, 30000);
+setInterval(() => { if (!$("app").hidden && document.visibilityState === "visible") refresh().catch(() => {}); }, 30000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !$("app").hidden) refresh().catch(() => {}); });
 </script>
 </body>
 </html>

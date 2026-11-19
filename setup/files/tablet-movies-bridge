@@ -55,6 +55,7 @@ Web portal for the parents' phones (home network only, PIN-protected):
   GET/POST /api/portal/schedule allowed hours, daily limit; POST extra, sleep (?kid=)
   GET  /api/portal/history      what the kid played and opened; GET now, POST tv-stop
   GET  /api/portal/system       TV, Plex, last update, disk space, uptime
+  POST /api/portal/power        {"action": "restart" | "shutdown"}, via tablet-power
   GET  /api/portal/dance        the Dance songs; POST/DELETE /api/portal/dance/<id>
   GET  /api/portal/dance-library?q=  Danny Go! songs; POST /api/portal/dance-link {"ref"}
   GET  /api/portal/week         the last 7 days: minutes per day, top shows and apps (?kid=)
@@ -303,7 +304,7 @@ def play_local(cfg, key=None, song=None):
         found = next((s for s in cfg.get("dance", []) if s["id"] == song), None)
         if not found:
             return {"result": "error", "message": "That song isn't on the list."}
-        title, kind, out = found["title"], "dance", {"video": song}
+        title, kind, out = found["title"], "dance", {"video": song, "duration": found.get("duration") or 0}
     else:
         item = next((m for m in cfg.get("movies", []) if m["key"] == key), None)
         if not item:
@@ -1196,6 +1197,28 @@ def kid_volume(percent=None):
             if answer_id == request_id:
                 return int(value) if value.isdigit() else None
     return None
+
+
+def power_request(action):
+    """Restart or shut down the box (the web page): passed to the root helper
+    tablet-power (via its .path unit), which lets a running update finish
+    first. Returns its answer ("restarting", "shutting-down",
+    "waiting-for-update") or "sent" if it hasn't answered in a few seconds."""
+    if action not in ("restart", "shutdown"):
+        raise ValueError("action must be restart or shutdown")
+    request_id = secrets.token_hex(4)
+    (STATE / "power-request").write_text(f"{request_id} {action}\n")
+    print(f"power: {action} requested from the web page", flush=True)
+    end = time.time() + 5
+    while time.time() < end:
+        time.sleep(0.3)
+        try:
+            answer_id, _, result = (STATE / "power-status").read_text().split()
+        except (FileNotFoundError, ValueError):
+            continue
+        if answer_id == request_id:
+            return result
+    return "sent"
 
 
 def android_fix(level, app, why):
@@ -2131,6 +2154,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, {"count": len(cfg["dance"])})
         if authed and route == ("GET", "system"):
             return self.reply(200, system_status())
+        if authed and route == ("POST", "power"):
+            return self.reply(200, {"result": power_request(self.body_json().get("action"))})
         if authed and route == ("GET", "now"):
             return self.reply(200, tv_now())
         if authed and route == ("POST", "tv-stop"):

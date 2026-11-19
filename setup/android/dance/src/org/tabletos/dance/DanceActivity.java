@@ -476,7 +476,7 @@ public class DanceActivity extends Activity {
         flash("Here it comes! 💃", 0, true);
         call("POST", "/dance-local/" + id, result -> {
             String status = result == null ? "error" : result.optString("result");
-            if ("ok".equals(status) && openInYouTubeKids(id)) {
+            if ("ok".equals(status) && openInYouTubeKids(id, result.optInt("duration"))) {
                 ui.postDelayed(this::finish, 1500);  // back to the carousel underneath
                 return;
             }
@@ -499,24 +499,26 @@ public class DanceActivity extends Activity {
      * The song in YouTube Kids: its own kids.youtube.com watch link plays it
      * straight away (tested on the Dell); then a youtube.com link; then just the app.
      */
-    private boolean openInYouTubeKids(String id) {
+    private boolean openInYouTubeKids(String id, int seconds) {
         String[] links = {"https://kids.youtube.com/watch?v=" + id, "https://www.youtube.com/watch?v=" + id};
         for (String link : links) {
             Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(link)).setPackage(YOUTUBE_KIDS);
-            if (view.resolveActivity(getPackageManager()) != null && start(view)) {
+            if (view.resolveActivity(getPackageManager()) != null && start(view, seconds)) {
                 return true;
             }
         }
         Intent app = getPackageManager().getLaunchIntentForPackage(YOUTUBE_KIDS);
-        return app != null && start(app);
+        return app != null && start(app, seconds);
     }
 
-    private boolean start(Intent intent) {
+    private boolean start(Intent intent, int seconds) {
         try {
             startActivity(intent);
-            // Tablet Home covers the screen until it plays, with its home button on top.
+            // Tablet Home covers the screen until it plays, then keeps a clear shield over
+            // YouTube Kids (only its home button works) and brings Dance back after the song.
             sendBroadcast(new Intent().setClassName("org.tabletos.home", "org.tabletos.home.PlayerCover")
-                    .putExtra("package", YOUTUBE_KIDS));
+                    .putExtra("package", YOUTUBE_KIDS).putExtra("seconds", seconds)
+                    .putExtra("back", getPackageName()));
             return true;
         } catch (Exception e) {  // not found, or refused by the kiosk's lock task
             Log.w(TAG, "couldn't open " + intent, e);

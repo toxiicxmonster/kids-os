@@ -115,7 +115,31 @@ Environment=KID_USER=$KID_USER
 ExecStart=/usr/local/sbin/tablet-android-restart --request
 EOF
 
+# Restart / Shut down on the parents' web page: the bridge drops a request,
+# this root helper waits for a running update to finish, then reboots or
+# powers off.
+install -m 755 "$TABLET_DIR/files/tablet-power" /usr/local/sbin/tablet-power
+cat > /etc/systemd/system/tablet-power.path <<'EOF'
+[Unit]
+Description=Kids OS restart / shut down requests from the web portal
+
+[Path]
+PathChanged=/var/lib/tablet-movies/power-request
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cat > /etc/systemd/system/tablet-power.service <<'EOF'
+[Unit]
+Description=Kids OS restart / shut down from the web portal
+
+[Service]
+Type=oneshot
+TimeoutStartSec=25min
+ExecStart=/usr/local/sbin/tablet-power --request
+EOF
+
 systemctl daemon-reload
-systemctl enable --now tablet-volume.path tablet-android-restart.path
+systemctl enable --now tablet-volume.path tablet-android-restart.path tablet-power.path
 systemctl enable tablet-movies-bridge.service
 systemctl restart tablet-movies-bridge.service

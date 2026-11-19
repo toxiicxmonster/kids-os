@@ -42,9 +42,11 @@ gitignored.)
   page (`files/movies-portal.html`). Android reaches it at 192.168.240.1;
   parent routes need loopback or the parent on the desktop; the web page
   needs a home-network client and the PIN. Per-kid state goes through
-  `KidView` (lists) and `kid_settings` (schedule, overrides); minute-by-minute
-  usage and history live in their own files (config writes re-trigger the
-  login-screen sync).
+  `KidView` (lists) and `kid_settings` (schedule, overrides). The web page has
+  bottom tabs (Home, Lists, Activity, Settings); Settings → Power restarts or
+  shuts down the box via the root `tablet-power` (.path unit; a running
+  `tablet-update` finishes first). Minute-by-minute usage and history live
+  in their own files (config writes re-trigger the login-screen sync).
 - **Watching on the tablet**: while movie time is paused or no TV is set up
   (`tablet_mode`, `"local"` in `/api/movies` and `/api/dance`), picks play on
   the tablet. `POST /api/play-local/<key>` / `dance-local/<id>` check tablet
@@ -79,7 +81,13 @@ gitignored.)
     carousel; after the hand-off Dance broadcasts to Tablet Home's
     `PlayerCover`: a themed overlay swallows every tap until media sound has
     run 1.5 s, with the floating home button (`HomeBubble`) on top while the
-    player is open; after 90 s with no sound it says to tap home.
+    player is open; after 90 s with no sound it says to tap home. For YouTube
+    Kids the overlay then turns clear but stays, still swallowing taps (its
+    own screen leads to other videos), so only 🏠 works (a swallowed tap
+    bounces it). The song is over once media sound has run about its length
+    (`seconds` from Dance) and then stops 2.5 s, or at length + 60 s (ads),
+    or after 60 s of silence: the media key pauses YouTube Kids and Dance
+    (`back`) comes back to the front.
 - **Paint** (`android/paint`): fill/brush on coloring pages or blank paper,
   undo (wipe included), each page's painting saved in the kid's Android. The
   bridge downloads each page once, makes it pure black lines on white

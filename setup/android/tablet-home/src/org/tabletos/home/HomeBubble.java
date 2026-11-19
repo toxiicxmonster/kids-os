@@ -55,6 +55,16 @@ final class HomeBubble {
         bubble = home;
     }
 
+    /** A little bounce: "tap me to go back" (when a tap elsewhere was swallowed). */
+    static void nudge() {
+        View home = bubble;
+        if (home == null || home.getScaleX() != 1f) {
+            return;  // gone, or already bouncing / being tapped
+        }
+        home.animate().scaleX(1.25f).scaleY(1.25f).setDuration(150).withEndAction(() ->
+                home.animate().scaleX(1f).scaleY(1f).setDuration(250).start()).start();
+    }
+
     static void hide(Context context) {
         if (bubble != null) {
             try {

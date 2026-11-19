@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Restart or shut down the box from the parents' web page. The bridge has no
+# privileges: it writes "<id> restart|shutdown" to REQUEST, and
+# tablet-power.path runs this as root.
+#
+#   tablet-power --request   (tablet-power.path)
+#
+# An update that's running (tablet-update holds its lock) is let finish first,
+# for up to 20 min, so a restart never cuts a stage in half. Answers go to
+# STATUS ("<id> <epoch> <result>": waiting-for-update, restarting,
+# shutting-down, bad-request), read by the bridge for the web page.
+set -uo pipefail
+
+STATE=/var/lib/tablet-movies
+REQUEST=$STATE/power-request
+STATUS=$STATE/power-status
+
+report() {  # <id> <result>
+  echo "tablet-power: $2"
+  printf '%s %s %s\n' "$1" "$(date +%s)" "$2" > "$STATUS.tmp"
+  chown tablet-movies:tablet-movies "$STATUS.tmp"
+  mv "$STATUS.tmp" "$STATUS"
+}
+
+[[ ${1:-} == --request ]] || { echo "usage: tablet-power --request" >&2; exit 2; }
+IFS= read -r line < "$REQUEST" || exit 0
+read -r id action _ <<< "$line"
+case $action in
+  restart) verb=reboot; result=restarting ;;
+  shutdown) verb=poweroff; result=shutting-down ;;
+  *) report "${id:-?}" bad-request; exit 0 ;;
+esac
+
+exec 9>/run/tablet-update.lock
+if ! flock -n 9; then
+  report "$id" waiting-for-update
+  flock -w 1200 9 || echo "tablet-power: update still running after 20 min; going ahead"
+fi
+report "$id" "$result"
+sleep 2  # let the web page read the answer
+systemctl --no-block "$verb"
