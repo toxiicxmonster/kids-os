@@ -91,6 +91,18 @@ public class PlayerCover extends BroadcastReceiver {
     private static long playedMs;
     private static long silentSince;
     private static String back;
+    // Which cover the watch loop belongs to: a new cover (or none) ends the old loop,
+    // so two loops never count the same song twice.
+    private static int generation;
+
+    private static void tick(Context context) {
+        int mine = generation;
+        ui.postDelayed(() -> {
+            if (mine == generation) {
+                watch(context);
+            }
+        }, TICK_MS);
+    }
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -175,7 +187,7 @@ public class PlayerCover extends BroadcastReceiver {
         HomeBubble.hide(context);
         HomeBubble.show(context, v -> v.animate().scaleX(0.85f).scaleY(0.85f).setDuration(90)
                 .withEndAction(() -> HomeBubble.goHome(context)).start());
-        ui.postDelayed(() -> watch(context), TICK_MS);
+        tick(context);
     }
 
     /** Lifts the cover (or, for YouTube Kids, clears it to a shield) once the title is playing. */
@@ -200,7 +212,7 @@ public class PlayerCover extends BroadcastReceiver {
                     silentSince = 0;
                     background.animate().alpha(0f).setDuration(400).start();
                     message.animate().alpha(0f).setDuration(400).start();
-                    ui.postDelayed(() -> watch(context), TICK_MS);
+                    tick(context);
                     return;
                 }
                 View lifting = cover;
@@ -215,7 +227,7 @@ public class PlayerCover extends BroadcastReceiver {
             gaveUp = true;  // keeps covering (and keeps watching, in case it starts late)
             message.setText("Oops! It didn't start.\nTap 🏠 to go back.");
         }
-        ui.postDelayed(() -> watch(context), TICK_MS);
+        tick(context);
     }
 
     /**
@@ -242,7 +254,7 @@ public class PlayerCover extends BroadcastReceiver {
             finished(context);
             return;
         }
-        ui.postDelayed(() -> watch(context), TICK_MS);
+        tick(context);
     }
 
     /** The song is over: pause YouTube Kids and go back to the app that asked (or home). */
@@ -304,6 +316,7 @@ public class PlayerCover extends BroadcastReceiver {
     }
 
     private static void clear(Context context) {
+        generation++;  // ends the old cover's watch loop
         shielding = false;
         if (cover != null) {
             remove(context, cover);
