@@ -125,13 +125,30 @@ public class PaintActivity extends Activity {
         io.shutdownNow();
     }
 
+    /** Work off the UI thread; nothing once Paint has closed (the pool is shut down then). */
+    private void inBackground(Runnable work) {
+        if (!io.isShutdown()) {
+            try {
+                io.execute(work);
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                // closed in between: nothing to do
+            }
+        }
+    }
+
     /** A toddler needs to see and hear that a tap worked: squash-and-bounce plus a pop. */
     private void tapFeedback(View v, Runnable then) {
         sounds.play(popSound, 1f, 1f, 1, 0, 1f);
         v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(90).withEndAction(() ->
                 v.animate().scaleX(1f).scaleY(1f).setDuration(220)
                         .setInterpolator(new OvershootInterpolator(3f))
-                        .withEndAction(then).start()).start();
+                        .withEndAction(() -> {
+                            // The app may have closed during the bounce (a second tap
+                            // elsewhere): then the tap does nothing (Paint crashed here).
+                            if (!isFinishing() && !isDestroyed()) {
+                                then.run();
+                            }
+                        }).start()).start();
     }
 
     // ---- kid screen ---------------------------------------------------------------------
@@ -405,7 +422,7 @@ public class PaintActivity extends Activity {
             closePicker();
             return;
         }
-        io.execute(() -> {
+        inBackground(() -> {
             Bitmap art = null;
             try {
                 byte[] data = request("GET", "/coloring-page/" + id);
@@ -446,7 +463,7 @@ public class PaintActivity extends Activity {
         }
         Bitmap art = paper.paintLayer().copy(Bitmap.Config.ARGB_8888, false);
         File f = artFile(pageId);
-        io.execute(() -> {
+        inBackground(() -> {
             File tmp = new File(f.getPath() + ".tmp");
             try (FileOutputStream out = new FileOutputStream(tmp)) {
                 art.compress(Bitmap.CompressFormat.PNG, 100, out);
@@ -486,7 +503,7 @@ public class PaintActivity extends Activity {
     }
 
     private void call(String method, String path, Done<JSONObject> done) {
-        io.execute(() -> {
+        inBackground(() -> {
             JSONObject result = null;
             try {
                 result = new JSONObject(new String(request(method, path), "UTF-8"));
@@ -499,7 +516,7 @@ public class PaintActivity extends Activity {
     }
 
     private void loadThumb(String id, ImageView into, int width) {
-        io.execute(() -> {
+        inBackground(() -> {
             try {
                 byte[] data = request("GET", "/coloring-page/" + id);
                 BitmapFactory.Options bounds = new BitmapFactory.Options();

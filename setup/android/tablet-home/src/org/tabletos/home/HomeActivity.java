@@ -747,7 +747,13 @@ public class HomeActivity extends Activity {
         v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(90).withEndAction(() ->
                 v.animate().scaleX(1f).scaleY(1f).setDuration(220)
                         .setInterpolator(new OvershootInterpolator(3f))
-                        .withEndAction(then).start()).start();
+                        .withEndAction(() -> {
+                            // The app may have closed during the bounce (a second tap
+                            // elsewhere): then the tap does nothing (Paint crashed here).
+                            if (!isFinishing() && !isDestroyed()) {
+                                then.run();
+                            }
+                        }).start()).start();
     }
 
     static final String KEY_VOLUME = "kid_volume";  // percent of the media stream's max
