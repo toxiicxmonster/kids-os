@@ -580,6 +580,7 @@ public class HomeActivity extends Activity {
         shade.setBackgroundColor(Color.argb(150, 0, 0, 0));
         shade.setClickable(true);
         shade.setOnClickListener(v -> root.removeView(shade));
+        shade.setElevation(dp(20));  // over the arrows and the palette button (elevation 10)
 
         int columns = 5;
         int screenW = getResources().getDisplayMetrics().widthPixels;
