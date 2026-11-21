@@ -467,7 +467,7 @@ class Meter:
         self.lufs, self.seconds = None, 0.0
         self.chunks = queue.Queue(maxsize=32)
         self.proc = subprocess.Popen([FFMPEG, "-hide_banner", "-nostats", "-loglevel", "info", "-f", "mpegts",
-                                      "-i", "pipe:0", "-vn", "-af", "ebur128", "-f", "null", "-"],
+                                      "-i", "pipe:0", "-vn", "-af", "ebur128=framelog=info", "-f", "null", "-"],
                                      stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         threading.Thread(target=self._feed, daemon=True).start()
         threading.Thread(target=self._read, daemon=True).start()
@@ -511,20 +511,25 @@ class Meter:
 
 
 def meter_feed(stream, data):
-    if "meter" not in stream:
-        try:
-            stream["meter"] = Meter() if os.path.exists(FFMPEG) else None
-        except OSError as e:
-            print(f"loudness meter: {e!r}", flush=True)
-            stream["meter"] = None
-    meter = stream["meter"]
+    with loudness_lock:  # (the player may ask for two segments at once)
+        if "meter" not in stream and not stream.get("stopped"):
+            try:
+                stream["meter"] = Meter() if os.path.exists(FFMPEG) else None
+            except OSError as e:
+                print(f"loudness meter: {e!r}", flush=True)
+                stream["meter"] = None
+        meter = stream.get("meter")
     if meter and not meter.feed(data):
         stream["meter"] = None  # long enough: keep it now
         threading.Thread(target=meter_keep, args=(stream, meter), daemon=True).start()
 
 
 def meter_done(stream):
-    meter = (stream or {}).pop("meter", None)
+    if stream is None:
+        return
+    with loudness_lock:
+        stream["stopped"] = True
+        meter = stream.pop("meter", None)
     if meter:
         threading.Thread(target=meter_keep, args=(stream, meter), daemon=True).start()
 
