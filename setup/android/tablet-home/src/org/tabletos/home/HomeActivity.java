@@ -497,8 +497,8 @@ public class HomeActivity extends Activity {
         root.addView(scroller, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         if (apps.size() > 1) {
-            View left = arrowButton("◀", Gravity.START, scroller, step, apps.size(), -1);
-            View right = arrowButton("▶", Gravity.END, scroller, step, apps.size(), 1);
+            View left = arrowButton("◀", Gravity.START, sidePad + margin, scroller, step, apps.size(), -1);
+            View right = arrowButton("▶", Gravity.END, sidePad + margin, scroller, step, apps.size(), 1);
             root.addView(left);
             root.addView(right);
             Runnable refresh = () -> {
@@ -513,8 +513,12 @@ public class HomeActivity extends Activity {
         return root;
     }
 
-    /** A big round arrow at one side: one tap moves the carousel one tile that way. */
-    private View arrowButton(String glyph, int side, HorizontalScrollView scroller, int step, int count, int dir) {
+    /**
+     * A big round arrow under one corner of the middle tile (level with the
+     * theme button, clear of the tiles peeking in at the sides): one tap
+     * moves the carousel one tile that way.
+     */
+    private View arrowButton(String glyph, int side, int inset, HorizontalScrollView scroller, int step, int count, int dir) {
         TextView arrow = new TextView(this);
         arrow.setText(glyph);
         arrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 40);
@@ -531,8 +535,9 @@ public class HomeActivity extends Activity {
             int index = Math.round((float) scroller.getScrollX() / step) + dir;
             scroller.smoothScrollTo(Math.max(0, Math.min(count - 1, index)) * step, 0);
         }));
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(104), dp(104), side | Gravity.CENTER_VERTICAL);
-        lp.leftMargin = lp.rightMargin = dp(20);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(104), dp(104), side | Gravity.BOTTOM);
+        lp.leftMargin = lp.rightMargin = inset;
+        lp.bottomMargin = dp(12);  // centred on the theme button (88dp, 20dp up)
         arrow.setLayoutParams(lp);
         return arrow;
     }

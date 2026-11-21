@@ -127,8 +127,9 @@ gitignored.)
   keeps a volume per kind (Plex/AirPlay, Netflix, YouTube) from what the TV
   was at while that kind played, and sets it before the next pick of that
   kind (`tv-levels.json`, the web page can edit or switch it off).
-- **Carousel**: big ◀ ▶ arrows at the sides move one tile (they fade out at
-  the ends), as well as swiping.
+- **Carousel**: big ◀ ▶ arrows under the middle tile's corners (level with
+  the theme button; at the screen's sides they covered the peeking tiles)
+  move one tile, fading out at the ends, as well as swiping.
 - **Carousel order**: the app opened most recently first (Tablet Home prefs
   `used_<package>`, so per kid). `BUILT_IN` packages (ours, plus Khan Academy
   Kids) are switched on once when first seen.
