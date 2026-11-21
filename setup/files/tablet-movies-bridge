@@ -2189,6 +2189,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # half-open connection (a phone gone to sleep mid-request) kept a thread forever.
     timeout = 60
 
+    # Routine requests that went fine aren't logged: video segments, bedtime
+    # checks and pictures were 92% of the journal (2026-11-21, ~13,000 lines a day).
+    QUIET = ("/api/hls/", "/api/allowed", "/api/poster/", "/api/dance-thumb/",
+             "/api/coloring-page/", "/api/theme", "/api/activity", "/api/hls-gain/")
+
+    def log_request(self, code="-", size="-"):
+        if (isinstance(code, int) or str(code).isdigit()) and int(code) < 400 \
+                and self.path.split("?")[0].startswith(self.QUIET):
+            return
+        super().log_request(code, size)
+
     def log_message(self, fmt, *args):
         print(f"{self.client_address[0]} {fmt % args}", flush=True)
 

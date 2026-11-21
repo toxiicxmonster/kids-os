@@ -121,8 +121,11 @@ artwork isn't ours to publish. The coloring pages shown are public domain
 
 - **A PC** that runs Ubuntu 24.04, with **Intel or AMD graphics**. Waydroid on
   NVIDIA falls back to slow software rendering. UEFI boot. Built and used on a Dell OptiPlex (i5-4570S, Intel HD 4600).
-- **A touchscreen monitor** (USB HID). Built with a 1024x768 USB panel. Panels
-  that report themselves as a pen are handled.
+- **A touchscreen monitor** (USB HID). Built with a 1024x768 USB panel. Most
+  panels just work. If taps don't arrive (the panel shows up as a pen), or
+  drags turn into taps, add the panel's id to `/etc/tablet-os/touch-panels.conf`
+  with the fix it needs (`as-touch`, `debounce`; the file explains both) and
+  run `sudo ./install.sh 40`.
 - **Optional, a TV on the same network** for Movies & TV and Dance:
   - **Roku**: Settings → System → Advanced system settings → Control by mobile apps
     → Network access: **Default**.

@@ -24,8 +24,23 @@ import sys
 import time
 
 HOLD = 0.08  # longest lift treated as a blip (seen: 18-34 ms; real gaps: 390 ms+)
-PANELS = {(0x1ddb, 0x0001)}  # vendor, product of panels that need this
+PANELS_CONF = "/etc/tablet-os/touch-panels.conf"  # "<vendor>:<product> <fixes>", "debounce" among them
 NAME = "Kids OS touchscreen"
+
+
+def debounced_panels(path=PANELS_CONF):
+    """(vendor, product) of the panels touch-panels.conf marks "debounce"."""
+    panels = set()
+    try:
+        with open(path) as f:
+            for line in f:
+                words = line.split("#", 1)[0].split()
+                m = re.fullmatch(r"([0-9a-fA-F]{4}):([0-9a-fA-F]{4})", words[0]) if words else None
+                if m and "debounce" in words[1:]:
+                    panels.add((int(m[1], 16), int(m[2], 16)))
+    except OSError:
+        pass
+    return panels
 
 BTN_TOUCH, ABS_X, ABS_Y, EV_KEY, EV_ABS = 0x14a, 0x00, 0x01, 0x01, 0x03
 
@@ -88,10 +103,11 @@ def replay(path):
 
 
 def find_panel(evdev):
+    panels = debounced_panels()
     for path in evdev.list_devices():
         dev = evdev.InputDevice(path)
         caps = dev.capabilities()
-        if ((dev.info.vendor, dev.info.product) in PANELS and dev.name != NAME
+        if ((dev.info.vendor, dev.info.product) in panels and dev.name != NAME
                 and BTN_TOUCH in caps.get(EV_KEY, []) and EV_ABS in caps):
             return dev
     return None
