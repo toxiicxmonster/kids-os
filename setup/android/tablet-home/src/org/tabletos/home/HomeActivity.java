@@ -88,7 +88,15 @@ public class HomeActivity extends Activity {
         public void run() {
             if (!Boolean.TRUE.equals(shownParentMode)) {
                 Themes.allowed((allowed, message) -> {
-                    if (!allowed && (!sleeping || !resumed)) {
+                    if (isDestroyed()) {
+                        return;  // an old copy (Android recreated us): it must not pull itself forward
+                    }
+                    if (!allowed && sleeping && resumed) {
+                        if (!message.equals(sleepMessage)) {  // e.g. "Sleep now", then bedtime
+                            sleepMessage = message;
+                            render();
+                        }
+                    } else if (!allowed && (!sleeping || !resumed)) {
                         sleeping = true;
                         sleepMessage = message;
                         if (resumed) {
@@ -153,6 +161,14 @@ public class HomeActivity extends Activity {
         if (Boolean.FALSE.equals(shownParentMode)) {
             showHomeBubble();
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        // Without this an old copy kept polling, and (never resumed) kept
+        // bringing the home screen forward every 20 s while the moon was up.
+        handler.removeCallbacksAndMessages(null);
+        super.onDestroy();
     }
 
     @Override
