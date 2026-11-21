@@ -231,7 +231,7 @@ itself.
 | `setup/files/` | everything the stages install: kiosk session, bridge, web page, helpers, themes, boot splash |
 | `setup/android/` | the four Android apps (Tablet Home, Movies & TV, Dance, Paint), built with the bare SDK tools, no Gradle |
 | `installer/` | autoinstall config for the USB installer |
-| `tools/` | USB stick builder, session export |
+| `tools/` | USB stick builder, session export, the bridge stress test |
 | `docs/screenshots/` | the pictures in this README |
 
 See `CLAUDE.md` for how it fits together and the hard-won details.
