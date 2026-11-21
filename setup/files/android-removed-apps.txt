@@ -9,3 +9,8 @@ com.google.android.apps.googlecamera.fishfood
 # Contacts, phone and messages
 com.google.android.contacts
 com.google.android.apps.messaging
+
+# The Google app (search, Discover, Assistant): not needed (the Play Store and
+# Google sign-in work without it; tested 2026-11-21), and it kept ~730 MB of
+# RAM busy in the kid's Android.
+com.google.android.googlequicksearchbox

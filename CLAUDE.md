@@ -192,6 +192,8 @@ gitignored.)
   grabs the panels marked `debounce` there and re-emits a clean uinput
   touchscreen. Kids OS is meant for any PC: keep hardware specifics in such
   lists or in detection, never hard-coded for one box.
+  `tablet-hardware-check` (stage 40; runs before install too) tells an
+  installer what their PC needs (`--touch` counts mid-drag blips).
 - **loginctl** prints `-p` properties in its own order: parse `key=value`.
 - **Cage 0.1.5** (Ubuntu 24.04) has no wlr-output-power-management, so screen
   sleep is a black Android overlay rather than monitor power-off.

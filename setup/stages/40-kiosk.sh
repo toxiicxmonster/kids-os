@@ -41,6 +41,8 @@ install -d /etc/tablet-os
 } > /etc/udev/rules.d/90-kidsos-touchpanel.rules
 udevadm control --reload
 udevadm trigger --action=change --subsystem-match=input
+# What this PC's touch panel (and the rest of the hardware) needs:
+install -m 755 "$TABLET_DIR/files/tablet-hardware-check" /usr/local/bin/tablet-hardware-check
 
 # ...and smooth over the momentary lifts some panels report mid-drag (the
 # Dell's), which otherwise turn a scroll into taps. Exits quietly without one.

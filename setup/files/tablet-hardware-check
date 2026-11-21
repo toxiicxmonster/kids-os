@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""Kids OS hardware check: will this PC make a good Kids OS tablet?
+
+Checks what Kids OS depends on and says what to do about anything that's off:
+Ubuntu, memory and disk, the kernel's Android support (binder), the graphics
+(hardware or software rendering for Android), the screen, the touch panel (and
+which touch-panels.conf fix it needs, if any), sound outputs and the network.
+
+Runs before installing (straight from the cloned repo) or after:
+
+  sudo python3 kids-os/setup/files/tablet-hardware-check
+  sudo tablet-hardware-check            (once installed)
+  sudo tablet-hardware-check --touch    also watch the panel while you drag a
+                                        finger around, to see if it needs debounce
+
+Read-only: it changes nothing. Root lets it read the touch panel's details.
+Exit status 1 if something would stop Kids OS from working.
+"""
+import fcntl
+import glob
+import os
+import re
+import select
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+PANELS_CONF = "/etc/tablet-os/touch-panels.conf"
+DEBOUNCED_NAME = "Kids OS touchscreen"  # tablet-touch-debounce's clean device
+BLIP = 0.08  # a lift this short mid-drag is a blip (tablet-touch-debounce's HOLD)
+
+# input event codes
+EV_KEY, EV_ABS = 0x01, 0x03
+BTN_TOOL_PEN, BTN_TOUCH = 0x140, 0x14a
+ABS_X, ABS_Y, ABS_MT_POSITION_X = 0x00, 0x01, 0x35
+INPUT_PROP_DIRECT = 0x01
+
+problems, warnings = [], []
+color = sys.stdout.isatty()
+
+
+def say(mark, text, detail=None):
+    marks = {"ok": ("✓", "32"), "warn": ("!", "33"), "bad": ("✗", "31"), "info": ("·", "0")}
+    sym, code = marks[mark]
+    print(f"  \033[{code}m{sym}\033[0m {text}" if color else f"  {sym} {text}")
+    for line in ([detail] if isinstance(detail, str) else detail or []):
+        print(f"      {line}")
+    if mark == "bad":
+        problems.append(text)
+    elif mark == "warn":
+        warnings.append(text)
+
+
+def section(title):
+    print(f"\n{title}")
+
+
+def read(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return default
+
+
+def run(*cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+# ---- system --------------------------------------------------------------------------
+
+def check_system():
+    section("System")
+    release = dict(re.findall(r'^(\w+)="?([^"\n]*)"?$', read("/etc/os-release"), re.M))
+    name = release.get("PRETTY_NAME", "unknown")
+    if release.get("ID") == "ubuntu" and release.get("VERSION_ID") == "24.04":
+        say("ok", name)
+    elif release.get("ID") == "ubuntu":
+        say("warn", f"{name}: Kids OS is built and tested on Ubuntu 24.04")
+    else:
+        say("bad", f"{name}: Kids OS needs Ubuntu (24.04)")
+
+    machine = os.uname().machine
+    if machine == "x86_64":
+        say("ok", "64-bit PC (x86_64)")
+    else:
+        say("bad", f"{machine}: Kids OS's Android (Waydroid with Google apps) needs an x86_64 PC")
+
+    mem = int(re.search(r"MemTotal:\s+(\d+)", read("/proc/meminfo", "MemTotal: 0")).group(1)) / 1024 / 1024
+    if mem >= 7.5:
+        say("ok", f"{mem:.0f} GB of memory")
+    elif mem >= 3.5:
+        say("warn", f"{mem:.0f} GB of memory: it works, but 8 GB keeps big games smooth")
+    else:
+        say("bad", f"{mem:.1f} GB of memory: Android needs at least 4 GB")
+
+    st = os.statvfs("/")
+    free = st.f_bavail * st.f_frsize / 1e9
+    if free >= 30:
+        say("ok", f"{free:.0f} GB free on /")
+    elif free >= 15:
+        say("warn", f"{free:.0f} GB free on /: enough to start, but apps and each extra kid's Android (~1-2 GB) add up")
+    else:
+        say("bad", f"{free:.0f} GB free on /: Kids OS needs about 15 GB, more for apps")
+
+    if os.path.isdir("/sys/firmware/efi"):
+        say("ok", "booted in UEFI mode")
+    else:
+        say("warn", "booted in legacy BIOS mode: the Kids OS USB installer is UEFI-only "
+                    "(installing on an existing Ubuntu is fine)")
+
+    virt = run("systemd-detect-virt").strip()
+    if virt and virt != "none":
+        say("info", f"running in a virtual machine ({virt}): fine for trying it out; Android draws in software")
+    return virt not in ("", "none")
+
+
+def check_kernel():
+    section("Android support in the kernel")
+    release = os.uname().release
+    config = read(f"/boot/config-{release}")
+    binder = re.search(r"^CONFIG_ANDROID_BINDER_IPC=([ym])", config, re.M)
+    if os.path.isdir("/dev/binderfs") and os.listdir("/dev/binderfs"):
+        say("ok", "binder is available (Waydroid's Android can run)")
+    elif binder or glob.glob(f"/lib/modules/{release}/**/binder_linux.ko*", recursive=True):
+        say("ok", "binder is available (Waydroid's Android can run)")
+    else:
+        say("bad", f"this kernel ({release}) has no binder: Waydroid's Android can't run",
+            "use Ubuntu's own generic kernel (linux-generic)")
+
+
+# ---- graphics ------------------------------------------------------------------------
+
+HARDWARE_DRIVERS = {"i915": "Intel", "xe": "Intel", "amdgpu": "AMD", "radeon": "AMD (older)"}
+VM_DRIVERS = {"vmwgfx", "virtio_gpu", "virtio-pci", "qxl", "bochs-drm", "bochs", "cirrus", "vboxvideo", "hyperv_drm"}
+
+
+def gpu_name(slot):
+    out = run("lspci", "-s", slot) if slot else ""
+    return out.split(": ", 1)[1].strip() if ": " in out else (slot or "unknown device")
+
+
+def check_graphics(in_vm):
+    section("Graphics (Android's drawing)")
+    gpus = []
+    for node in sorted(glob.glob("/sys/class/drm/renderD*")):
+        driver = re.search(r"DRIVER=(\S+)", read(f"{node}/device/uevent"))
+        driver = driver.group(1) if driver else "?"
+        slot = os.path.basename(os.path.realpath(f"{node}/device"))
+        gpus.append((driver, gpu_name(slot)))
+    if not gpus:
+        say("warn", "no graphics device with a render node: Android will draw in software (slow)")
+        return
+    for driver, name in gpus:
+        say("info", f"{name} (driver: {driver})")
+    good = [(d, n) for d, n in gpus if d in HARDWARE_DRIVERS]
+    if in_vm:
+        say("warn", "virtual machine: Android draws in software (fine for trying, slow for games)")
+    elif good:
+        say("ok", f"hardware rendering on the {HARDWARE_DRIVERS[good[0][0]]} graphics")
+        if any(d == "nouveau" for d, _ in gpus):
+            say("warn", "an NVIDIA card with the nouveau driver is also present; if Android shows a "
+                        "black screen, set drm_device = /dev/dri/renderD… (the Intel/AMD one) "
+                        "under [waydroid] in /var/lib/waydroid/waydroid.cfg")
+    elif any(d in ("nvidia", "nouveau") for d, _ in gpus):
+        say("warn", "NVIDIA only: Waydroid doesn't support it, so Android draws in software. Games will be "
+                    "slow. An Intel CPU's built-in graphics (monitor on the motherboard's port, enabled "
+                    "in the firmware settings) or a cheap AMD card fixes that")
+    else:
+        say("warn", "graphics Waydroid may not accelerate: if Android is black or glitchy, "
+                    "install with WAYDROID_RENDER=software")
+
+
+# ---- screen --------------------------------------------------------------------------
+
+def check_screen():
+    section("Screen")
+    found = False
+    for conn in sorted(glob.glob("/sys/class/drm/card*-*")):
+        if read(f"{conn}/status").strip() != "connected":
+            continue
+        modes = read(f"{conn}/modes").split()
+        found = True
+        name = os.path.basename(conn).split("-", 1)[1]
+        if not modes:
+            say("info", f"{name}: connected")
+            continue
+        w, h = (int(v) for v in re.findall(r"\d+", modes[0])[:2])
+        if w < 1024 or h < 600:
+            say("warn", f"{name}: {modes[0]}: small; tiles and posters are made for 1024x768 and up")
+        else:
+            say("ok", f"{name}: {modes[0]}")
+    if not found:
+        say("warn", "no connected monitor found (fine over SSH if the touch monitor is plugged in later)")
+
+
+# ---- touch ---------------------------------------------------------------------------
+
+def bits(hexwords):
+    """The set bits of a /proc/bus/input/devices bitmap (64-bit words, most significant first)."""
+    out = set()
+    for i, word in enumerate(reversed(hexwords.split())):
+        value = int(word, 16)
+        out.update(i * 64 + b for b in range(64) if value >> b & 1)
+    return out
+
+
+def input_devices():
+    devices = []
+    for block in read("/proc/bus/input/devices").strip().split("\n\n"):
+        d = {"bitmaps": {}}
+        for line in block.splitlines():
+            if line.startswith("I:"):
+                d.update({k.lower(): v for k, v in re.findall(r"(\w+)=(\w+)", line)})
+            elif line.startswith("N: Name="):
+                d["name"] = line.split("=", 1)[1].strip('"')
+            elif line.startswith("H: Handlers="):
+                ev = re.search(r"event(\d+)", line)
+                d["event"] = f"/dev/input/event{ev.group(1)}" if ev else None
+            elif line.startswith("B: "):
+                key, val = line[3:].split("=", 1)
+                d["bitmaps"][key] = bits(val)
+        if d.get("event"):
+            devices.append(d)
+    return devices
+
+
+def abs_resolution(path, code):
+    """The axis' resolution (units/mm) from EVIOCGABS; None if unreadable (not root)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        buf = bytearray(24)
+        fcntl.ioctl(fd, 0x80184540 + code, buf)  # _IOR('E', 0x40 + code, struct input_absinfo)
+        return struct.unpack("6i", buf)[5]
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def udev_touchscreen(path):
+    minor = os.minor(os.stat(path).st_rdev)
+    return "E:ID_INPUT_TOUCHSCREEN=1" in read(f"/run/udev/data/c13:{minor}")
+
+
+def configured_panels():
+    panels = {}
+    for line in read(PANELS_CONF).splitlines():
+        words = line.split("#", 1)[0].split()
+        if words and re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{4}", words[0]):
+            panels[words[0].lower()] = words[1:]
+    return panels
+
+
+def touch_devices():
+    found = []
+    for d in input_devices():
+        b = d["bitmaps"]
+        absb, keyb, prop = b.get("ABS", set()), b.get("KEY", set()), b.get("PROP", set())
+        direct = INPUT_PROP_DIRECT in prop
+        if ABS_MT_POSITION_X in absb and direct:
+            kind = "touch"
+        elif BTN_TOUCH in keyb and {ABS_X, ABS_Y} <= absb and (direct or BTN_TOOL_PEN in keyb):
+            kind = "pen" if BTN_TOOL_PEN in keyb else "touch"
+        else:
+            continue
+        d["kind"] = kind
+        d["id"] = f"{d.get('vendor', '0000')}:{d.get('product', '0000')}".lower()
+        found.append(d)
+    return found
+
+
+def check_touch():
+    section("Touch")
+    panels = configured_panels()
+    devices = touch_devices()
+    debounced = [d for d in devices if d.get("name") == DEBOUNCED_NAME]
+    raw = [d for d in devices if d.get("name") != DEBOUNCED_NAME]
+    if not raw:
+        say("bad", "no touchscreen found",
+            ["is the monitor's USB cable plugged in? (touch goes over USB, separately from the picture)",
+             "if the monitor shows up only as a mouse, it isn't supported"])
+        return []
+    root = os.geteuid() == 0
+    for d in raw:
+        fixes = panels.get(d["id"], [])
+        label = f"{d.get('name', '?')} ({d['id']})"
+        if fixes:
+            say("ok", f"{label}: listed in touch-panels.conf ({' '.join(fixes)})")
+            continue
+        if d["kind"] == "pen":
+            res = abs_resolution(d["event"], ABS_X) if root else None
+            if res == 0 and not udev_touchscreen(d["event"]):
+                say("bad", f"{label}: shows up as a pen with no size, which libinput ignores: taps won't arrive",
+                    [f"fix: add '{d['id']}  as-touch' to {PANELS_CONF} (sudo ./install.sh 40 after)",
+                     "then run this again with --touch to see if it also needs debounce"])
+            elif res == 0:
+                say("ok", f"{label}: a pen-style panel, set up as a touchscreen by a udev rule")
+            elif res is None:
+                say("warn", f"{label}: a pen-style panel; run this with sudo to see if it needs the as-touch fix")
+            else:
+                say("ok", f"{label}: a pen-style panel libinput can use")
+        else:
+            say("ok", f"{label}: {'multi-touch' if ABS_MT_POSITION_X in d['bitmaps'].get('ABS', set()) else 'single-touch'} touchscreen")
+    if debounced:
+        say("ok", f"touch debounce is running ('{DEBOUNCED_NAME}')")
+    return raw + debounced
+
+
+def touch_test(devices, seconds=15):
+    """Watch the touch devices while a finger drags around; count blips (a lift
+    of under BLIP s followed by a touch: a drag the panel broke into taps)."""
+    section(f"Touch test ({seconds} s)")
+    if os.geteuid() != 0:
+        say("warn", "needs sudo to read the touch panel")
+        return
+    # A panel tablet-touch-debounce has grabbed gives nothing directly: test what it gives instead.
+    fds = {}
+    for d in devices:
+        try:
+            fds[os.open(d["event"], os.O_RDONLY | os.O_NONBLOCK)] = d
+        except OSError:
+            pass
+    if not fds:
+        say("warn", "couldn't open any touch device")
+        return
+    print("      Drag a finger slowly around the screen, without lifting it, until this finishes...")
+    stats = {fd: {"downs": 0, "blips": 0, "lifted": None} for fd in fds}
+    end = time.time() + seconds
+    while time.time() < end:
+        ready, _, _ = select.select(list(fds), [], [], 0.5)
+        for fd in ready:
+            try:
+                data = os.read(fd, 24 * 64)
+            except OSError:
+                continue
+            for i in range(0, len(data) - 23, 24):
+                sec, usec, etype, code, value = struct.unpack("qqHHi", data[i:i + 24])
+                if etype != EV_KEY or code != BTN_TOUCH:
+                    continue
+                t, s = sec + usec / 1e6, stats[fd]
+                if value == 1:
+                    s["downs"] += 1
+                    if s["lifted"] is not None and t - s["lifted"] < BLIP:
+                        s["blips"] += 1
+                elif value == 0:
+                    s["lifted"] = t
+    for fd, d in fds.items():
+        os.close(fd)
+        s = stats[fd]
+        label = f"{d.get('name', '?')} ({d['id']})"
+        if d.get("name") != DEBOUNCED_NAME and s["downs"] == 0 and any(x.get("name") == DEBOUNCED_NAME for x in devices):
+            continue  # grabbed by the debounce; its clean device is reported instead
+        if s["downs"] == 0:
+            say("warn", f"{label}: no touches seen")
+        elif s["blips"] >= 2 and d.get("name") != DEBOUNCED_NAME:
+            say("bad", f"{label}: the finger 'lifted' {s['blips']} times for under {int(BLIP * 1000)} ms mid-drag: "
+                       "drags will turn into taps",
+                [f"fix: add 'debounce' to its line in {PANELS_CONF} ('{d['id']}  debounce', "
+                 "plus as-touch if that was needed), then sudo ./install.sh 40"])
+        elif s["blips"] >= 2:
+            say("bad", f"{label}: still {s['blips']} blips after the debounce")
+        else:
+            say("ok", f"{label}: {s['downs']} touch{'es' if s['downs'] != 1 else ''}, no blips: drags stay drags")
+
+
+# ---- sound, network --------------------------------------------------------------------
+
+def check_sound():
+    section("Sound")
+    cards = re.findall(r"^\s*(\d+) \[[^\]]*\]: (.+)$", read("/proc/asound/cards"), re.M)
+    if not cards:
+        say("warn", "no sound card found: apps and videos will be silent")
+        return
+    outputs = []
+    for line in read("/proc/asound/pcm").splitlines():
+        m = re.match(r"(\d+)-\d+: ([^:]*) :.*playback", line)
+        if m:
+            outputs.append((int(m.group(1)), m.group(2).strip()))
+    for num, name in cards:
+        names = [o for c, o in outputs if c == int(num)]
+        say("info", f"card {num}: {name.strip()}" + (f" ({', '.join(names)})" if names else ""))
+    hdmi = re.compile(r"HDMI|DisplayPort|\bDP\b", re.I)
+    if outputs and all(hdmi.search(o) for _, o in outputs):
+        say("warn", "only HDMI/DisplayPort outputs: sound comes from the monitor's own speakers, if it has any; "
+                    "a USB sound adapter or speakers is an easy fix")
+    elif outputs:
+        say("ok", "an analog or USB output for speakers (Kids OS turns every card up; Android's volume is the control)")
+
+
+def check_network():
+    section("Network")
+    route = next((l.split()[0] for l in read("/proc/net/route").splitlines()[1:]
+                  if l.split()[1:2] == ["00000000"]), None)
+    if route:
+        kind = "Wi-Fi" if os.path.isdir(f"/sys/class/net/{route}/wireless") else "wired"
+        say("ok", f"connected ({kind}, {route})")
+    else:
+        say("bad", "no network connection: setup downloads Android and the apps")
+        return
+    try:
+        socket.create_connection(("github.com", 443), timeout=5).close()
+        say("ok", "reaches the internet")
+    except OSError:
+        say("bad", "can't reach the internet (github.com)")
+
+
+def main():
+    if "-h" in sys.argv or "--help" in sys.argv:
+        print(__doc__.strip())
+        return 0
+    print("Kids OS hardware check")
+    in_vm = check_system()
+    check_kernel()
+    check_graphics(in_vm)
+    check_screen()
+    touches = check_touch()
+    if "--touch" in sys.argv and touches:
+        touch_test(touches)
+    check_sound()
+    check_network()
+    print()
+    if problems:
+        print(f"{len(problems)} problem{'s' if len(problems) > 1 else ''} to fix first"
+              f"{f', and {len(warnings)} thing' + ('s' if len(warnings) > 1 else '') + ' to know' if warnings else ''}.")
+    elif warnings:
+        print(f"Good to go, with {len(warnings)} thing{'s' if len(warnings) > 1 else ''} to know (marked !).")
+    else:
+        print("Good to go.")
+    if "--touch" not in sys.argv and touches:
+        print("Tip: run it again with --touch to check that drags on the panel stay drags.")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

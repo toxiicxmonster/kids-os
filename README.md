@@ -125,7 +125,7 @@ artwork isn't ours to publish. The coloring pages shown are public domain
   panels just work. If taps don't arrive (the panel shows up as a pen), or
   drags turn into taps, add the panel's id to `/etc/tablet-os/touch-panels.conf`
   with the fix it needs (`as-touch`, `debounce`; the file explains both) and
-  run `sudo ./install.sh 40`.
+  run `sudo ./install.sh 40`. `tablet-hardware-check --touch` finds both.
 - **Optional, a TV on the same network** for Movies & TV and Dance:
   - **Roku**: Settings → System → Advanced system settings → Control by mobile apps
     → Network access: **Default**.
@@ -151,8 +151,16 @@ On the PC (or over SSH):
 ```bash
 sudo apt-get install -y git
 git clone https://github.com/toxiicxmonster/kids-os.git
+sudo python3 kids-os/setup/files/tablet-hardware-check --touch
 sudo TABLET_REPO=https://github.com/toxiicxmonster/kids-os.git ./kids-os/setup/install.sh
 ```
+
+The hardware check changes nothing. It says whether this PC suits Kids OS
+(Ubuntu, memory, disk, Android support in the kernel, graphics, screen, sound,
+network) and, with `--touch`, watches the touch panel while you drag a finger
+around. For anything that's off it says what to do, such as the
+`touch-panels.conf` line a panel needs. Once installed, it's
+`sudo tablet-hardware-check`.
 
 This runs every setup stage in order and takes about an hour, mostly downloads.
 It logs to `/var/log/tablet-os-setup.log`, and it's safe to run again: each
