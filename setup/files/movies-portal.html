@@ -231,7 +231,7 @@
         <details id="tvLevels" hidden>
           <summary>A volume for each kind of video</summary>
           <div class="field">
-            <label for="levelsOn">Even out Plex, Netflix and YouTube</label>
+            <label for="levelsOn">Even out movies, Netflix and YouTube</label>
             <div class="switch"><input type="checkbox" id="levelsOn"><span></span></div>
           </div>
           <div id="levelRows"></div>
@@ -260,7 +260,7 @@
         <section class="card">
           <h2>➕ Add movies and shows</h2>
           <div class="search">
-            <input id="q" type="search" placeholder="Search your Plex library" enterkeyhint="search">
+            <input id="q" type="search" placeholder="Search your Plex and Jellyfin movies" enterkeyhint="search">
             <button class="primary" id="searchBtn">Search</button>
           </div>
           <div id="results"></div>
@@ -372,12 +372,46 @@
       </section>
 
       <section class="card">
+        <h2>🍿 Plex</h2>
+        <div id="plexState" class="state info"><span class="icon">🍿</span><div>Checking…</div></div>
+        <div id="plexCodeBox" hidden>
+          <p class="msg" style="margin:0 0 6px">On any phone or computer, open <a href="https://plex.tv/link" target="_blank" rel="noopener">plex.tv/link</a>, sign in, and enter:</p>
+          <div class="state on" style="justify-content:center"><span id="plexCode" style="font-size:32px;letter-spacing:6px">····</span></div>
+        </div>
+        <div id="plexProfiles"></div>
+        <div class="buttons">
+          <button class="primary" id="plexLinkBtn" hidden>🔗 Link Plex</button>
+          <button id="plexProfileBtn" hidden>👤 Change profile</button>
+          <button id="plexUnlinkBtn" hidden>Unlink</button>
+        </div>
+        <p class="msg">Link the Plex account that owns your server, then choose the kids' profile: titles play as that
+          profile, and only what it can see can be added.</p>
+      </section>
+
+      <section class="card">
+        <h2>🎞️ Jellyfin</h2>
+        <div id="jfState" class="state info"><span class="icon">🎞️</span><div>Checking…</div></div>
+        <form id="jfForm" hidden>
+          <div class="search"><input id="jfUrl" placeholder="Server address, e.g. 192.168.0.10:8096" inputmode="url" autocomplete="off" aria-label="Jellyfin server address"></div>
+          <div class="search"><input id="jfUser" placeholder="Jellyfin user (the kids' one)" autocomplete="off" autocapitalize="none" aria-label="Jellyfin user"></div>
+          <div class="search">
+            <input id="jfPass" type="password" placeholder="Password" autocomplete="off" aria-label="Jellyfin password">
+            <button class="primary" id="jfBtn" type="submit">Link</button>
+          </div>
+        </form>
+        <div class="buttons" id="jfUnlinkRow" hidden><button id="jfUnlinkBtn">Unlink</button></div>
+        <p class="msg">Using Jellyfin instead of (or as well as) Plex? Link the kids' own Jellyfin user, so its
+          parental controls decide what you can add. Only a sign-in token is kept, not the password. Titles play on
+          the tablet, on an LG over AirPlay, or in the TV's Jellyfin app (signed in as the same user).</p>
+      </section>
+
+      <section class="card">
         <h2>📺 TV</h2>
         <div id="tvChosen" class="state info"><span class="icon">📺</span><div>Checking…</div></div>
         <div class="buttons"><button id="findTvsBtn">🔍 Find TVs</button></div>
         <div id="tvList"></div>
         <div id="airplayBox" hidden>
-          <h3>AirPlay (Plex on an LG)</h3>
+          <h3>AirPlay (Plex and Jellyfin on an LG)</h3>
           <p class="msg" id="airplayMsg" style="margin:0 0 8px"></p>
           <div class="buttons" id="airplayStartRow"><button id="airplayBtn">📡 Pair AirPlay</button></div>
           <div class="search" id="airplayPinRow" hidden>
@@ -499,7 +533,7 @@ function go(name) {
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
   window.scrollTo(0, 0);
   if (name === "activity") { loadWeek().catch(() => {}); loadHistory().catch(() => {}); }
-  if (name === "settings") { loadSchedule().catch(() => {}); loadSystem().catch(() => {}); loadTvSetup().catch(() => {}); }
+  if (name === "settings") { loadSchedule().catch(() => {}); loadSystem().catch(() => {}); loadTvSetup().catch(() => {}); loadJellyfin().catch(() => {}); loadPlex().catch(() => {}); }
   if (name === "lists") showTab(currentTab);
 }
 document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => { e.preventDefault(); go(b.dataset.go); });
@@ -665,7 +699,7 @@ $("vol").addEventListener("change", async () => {
 });
 
 // ---- TV volume ---------------------------------------------------------------------------------
-const KIND_NAMES = {plex: "Plex", netflix: "Netflix", youtube: "YouTube"};
+const KIND_NAMES = {plex: "Plex & Jellyfin", netflix: "Netflix", youtube: "YouTube"};
 let tvVolBusy = false;
 function showTvVolume(r) {
   const lg = r.ok && r.kind === "lg", roku = r.ok && r.kind === "roku";
@@ -728,13 +762,88 @@ function showChosenTv(tv) {
              (tv.kind === "lg" ? "LG" : "Roku") + (tv.kind === "lg" ? (tv.airplay_paired ? " · AirPlay paired" : " · AirPlay not paired") : "") + " · " + tv.ip);
   $("airplayBox").hidden = !tv || tv.kind !== "lg";
   if (tv && tv.kind === "lg") $("airplayMsg").textContent = tv.airplay_paired
-    ? "Paired: Plex titles play on this TV over AirPlay. Pair again if the TV was reset."
-    : "Plex plays on an LG over AirPlay. Pair once: the TV shows a PIN to type here.";
+    ? "Paired: Plex and Jellyfin titles play on this TV over AirPlay. Pair again if the TV was reset."
+    : "Plex (and Jellyfin) play on an LG over AirPlay. Pair once: the TV shows a PIN to type here.";
 }
 async function loadTvSetup() {
   const r = await api("GET", "setup-tv");
   showChosenTv(r.tv);
 }
+
+// ---- Plex (Settings) ----------------------------------------------------------------------------
+let plexPolling = null;
+function showPlex(r) {
+  if (!r.linked) state($("plexState"), "info", "🍿", "Not linked", r.code ? "Waiting for the code…" : "Only needed if your movies are on a Plex server.");
+  else if (!r.profile) state($("plexState"), "info", "🍿", "Linked: " + (r.account || "Plex"), "Now choose the kids' profile below.");
+  else state($("plexState"), "on", "🍿", "Linked: " + (r.account || "Plex"), "Profile " + r.profile + (r.server ? " · " + r.server : ""));
+  $("plexCodeBox").hidden = r.linked || !r.code;
+  if (r.code) $("plexCode").textContent = r.code;
+  $("plexLinkBtn").hidden = r.linked || !!r.code;
+  $("plexProfileBtn").hidden = !r.linked;
+  $("plexUnlinkBtn").hidden = !r.linked && !r.code;
+  if (r.linked && !r.profile && !$("plexProfiles").childElementCount) showPlexProfiles().catch(oops);
+}
+async function loadPlex() {
+  const r = await api("GET", "plex");
+  showPlex(r);
+  if (r.code && !r.linked) pollPlexLink();
+}
+function pollPlexLink() {
+  clearInterval(plexPolling);
+  const until = Date.now() + 15 * 60 * 1000;
+  plexPolling = setInterval(async () => {
+    if (Date.now() > until || $("view-settings").hidden) { clearInterval(plexPolling); return; }
+    try {
+      const r = await api("GET", "plex-link");
+      if (r.linked) { clearInterval(plexPolling); toast("Plex linked ✓"); }
+      showPlex(r);
+    } catch (e) { clearInterval(plexPolling); oops(e); }
+  }, 3000);
+}
+async function showPlexProfiles() {
+  $("plexProfiles").replaceChildren(el("p", "msg", "Getting the profiles…"));
+  const r = await api("GET", "plex-profiles");
+  $("plexProfiles").replaceChildren(...r.profiles.map((pr) => {
+    const chosen = r.profile === pr.title;
+    const b = el("button", chosen ? "added" : "primary", chosen ? "✓ Chosen" : "Use this");
+    b.onclick = () => busy(b, async () => {
+      showPlex(await api("POST", "plex-profile/" + encodeURIComponent(pr.id)));
+      $("plexProfiles").replaceChildren(); toast("Profile chosen ✓"); refresh().catch(() => {});
+    });
+    return listRow(null, false, pr.title, pr.restricted ? "Managed (kid) profile" : "Profile", b);
+  }));
+}
+$("plexLinkBtn").onclick = () => busy($("plexLinkBtn"), async () => {
+  const r = await api("POST", "plex-link");
+  showPlex({linked: false, code: r.code}); pollPlexLink();
+});
+$("plexProfileBtn").onclick = () => busy($("plexProfileBtn"), showPlexProfiles);
+$("plexUnlinkBtn").onclick = () => busy($("plexUnlinkBtn"), async () => {
+  if (!await confirmBox("Unlink Plex?", "Plex titles on the lists stop playing until it's linked again.", "Unlink", true)) return;
+  clearInterval(plexPolling); $("plexProfiles").replaceChildren();
+  showPlex(await api("DELETE", "plex")); toast("Unlinked");
+});
+
+// ---- Jellyfin (Settings) ------------------------------------------------------------------------
+function showJellyfin(r) {
+  if (r.linked) state($("jfState"), "on", "🎞️", "Linked: " + r.server, r.user + " · " + r.url);
+  else state($("jfState"), "info", "🎞️", "Not linked", "Only needed if your movies are on a Jellyfin server.");
+  $("jfForm").hidden = r.linked; $("jfUnlinkRow").hidden = !r.linked;
+}
+async function loadJellyfin() { showJellyfin(await api("GET", "jellyfin")); }
+$("jfForm").onsubmit = (e) => {
+  e.preventDefault();
+  busy($("jfBtn"), async () => {
+    try {
+      const r = await api("POST", "jellyfin", {url: $("jfUrl").value, username: $("jfUser").value, password: $("jfPass").value});
+      $("jfPass").value = ""; showJellyfin(r); toast("Jellyfin linked ✓");
+    } catch (err) { oops(err); }
+  });
+};
+$("jfUnlinkBtn").onclick = () => busy($("jfUnlinkBtn"), async () => {
+  if (!await confirmBox("Unlink Jellyfin?", "Jellyfin titles on the lists stop playing until it's linked again.", "Unlink", true)) return;
+  showJellyfin(await api("DELETE", "jellyfin")); toast("Unlinked");
+});
 $("findTvsBtn").onclick = () => busy($("findTvsBtn"), async () => {
   $("tvList").replaceChildren(el("p", "msg", "Looking on the home network…"));
   const r = await api("GET", "tvs");
@@ -805,7 +914,8 @@ function removeButton(title, remove) {
 }
 
 // ---- Movies & TV -------------------------------------------------------------------------------
-const kindText = (m) => [m.year, {show: "TV show · random episode", netflix: "Netflix (TV only)"}[m.kind] || "Movie"].filter(Boolean).join(" · ");
+const kindText = (m) => [m.year, {show: "TV show · random episode", netflix: "Netflix (TV only)"}[m.kind] || "Movie",
+  m.source === "jellyfin" || String(m.key).startsWith("jf") ? "Jellyfin" : ""].filter(Boolean).join(" · ");
 function showItems(items) {
   $("count").textContent = "(" + items.length + ")";
   if (!items.length) { $("items").replaceChildren(el("p", "msg", "Nothing yet. Search above to add some.")); return; }
@@ -1031,7 +1141,10 @@ async function loadSystem() {
   const add = (label, text, good) => facts.push([label, text, good]);
   add("On the tablet", r.kid_on_screen ? "🧒 " + r.kid_on_screen : "Nobody (login screen or parent)", true);
   add("TV", r.tv.power === null ? "Can't find it on the network" : (r.tv.name || "TV") + (r.tv.power === "PowerOn" ? " · on" : " · off"), r.tv.power !== null);
-  add("Plex", !r.plex.linked ? "Not linked" : (r.plex.server || "Server") + (r.plex.reachable ? " · OK" : " · can't reach it"), r.plex.linked && r.plex.reachable);
+  if (r.plex.linked || !r.jellyfin || !r.jellyfin.linked)
+    add("Plex", !r.plex.linked ? "Not linked" : (r.plex.server || "Server") + (r.plex.reachable ? " · OK" : " · can't reach it"), r.plex.linked && r.plex.reachable);
+  if (r.jellyfin && r.jellyfin.linked)
+    add("Jellyfin", (r.jellyfin.server || "Server") + (r.jellyfin.reachable ? " · OK" : " · can't reach it"), r.jellyfin.reachable);
   const upWords = {"up-to-date": "Up to date", "updated": "Updated", "stage-failed": "An update step failed (it retries by itself)"};
   add("Updates", r.update ? (upWords[r.update.result] || r.update.result.replace(/-/g, " ")) + " · " + new Date(r.update.at * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"})
       : "No record yet", !r.update || r.update.result !== "stage-failed");

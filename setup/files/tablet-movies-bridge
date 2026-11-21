@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Kids OS Movies bridge: plays approved Plex movies on the chosen Roku or LG webOS TV.
+"""Kids OS Movies bridge: plays approved Plex and Jellyfin movies and shows on
+the chosen Roku or LG webOS TV, or on the tablet itself.
 
 Netflix titles can go on the list too: they open in the Netflix app on the
 Roku (ECP deep link), in whichever Netflix profile was used last on that TV,
@@ -42,6 +43,8 @@ the host itself):
   GET  /api/library?q=          movies the profile can see
   POST/DELETE /api/movies/<key> add/remove an approved movie
   POST /api/netflix/<id>        add a Netflix title (the number in its netflix.com/title/ link)
+  GET/POST/DELETE /api/jellyfin the linked Jellyfin server; link with {"url", "username",
+                                "password"} (only the token is kept); DELETE unlinks
   POST /api/portal-pin          set the web portal PIN ({"pin": "1234"})
   GET  /api/themes              everyone's theme; POST /api/themes/<user>/<name> sets one
 Web portal for the parents' phones (home network only, PIN-protected):
@@ -51,6 +54,10 @@ Web portal for the parents' phones (home network only, PIN-protected):
   POST /api/portal/pause        {"minutes": n | "tomorrow" | "forever" | 0 (resume)}
   GET  /api/portal/library?q=   search, POST/DELETE /api/portal/items/<key>
   POST /api/portal/netflix      {"ref": "<netflix.com/title/... link or its number>"}
+  GET/POST/DELETE /api/portal/jellyfin  the same Jellyfin link as /api/jellyfin
+  GET/DELETE /api/portal/plex   Plex's link (DELETE unlinks); POST/GET plex-link starts linking
+                                (a plex.tv/link code) and checks it; GET plex-profiles, then
+                                POST plex-profile/<id> picks the profile (and the server)
   GET/POST /api/portal/volume   the kid volume ({"percent": 0-100}), via tablet-volume
   GET/POST /api/portal/tv-volume  the TV's: LG {"level": 0-100, "mute": bool}, Roku {"step": ±n, "mute": true}
   GET/POST /api/portal/tv-levels  a TV volume for each kind ({"enabled", "plex", "netflix", "youtube"})
@@ -367,7 +374,7 @@ def stream_start(key, size=None, bitrate=None, client=None, show=None):
     now = time.time()
     for old in [s for s, v in streams.items() if now - v["at"] > 6 * 3600]:
         meter_done(streams.pop(old, None))
-    streams[sid] = {"key": str(int(key)), "at": now, "size": size, "bitrate": bitrate, "client": client,
+    streams[sid] = {"key": key if is_jf(key) else str(int(key)), "at": now, "size": size, "bitrate": bitrate, "client": client,
                     "show": show}
     return sid
 
@@ -381,11 +388,14 @@ def tv_stream_request(method, path, client):
     return bool(stream and stream.get("client") == str(client))
 
 
-def stream_get(cfg, sid, rest):
-    """(body, content type) of one HLS request, passed on to the Plex transcoder."""
+def stream_get(cfg, sid, rest, query=""):
+    """(body, content type) of one HLS request, passed on to the Plex transcoder
+    (or Jellyfin's)."""
     stream = streams.get(sid)
     if not stream or ".." in rest or not re.fullmatch(r"[A-Za-z0-9_./-]+", rest):
         raise KeyError(sid)
+    if is_jf(stream["key"]):
+        return jellyfin_stream_get(cfg, sid, stream, rest, query)
     base = f"{cfg['server_url']}/video/:/transcode/universal/"
     # Just the token (the bridge's usual JSON Accept header gets a 400 from the transcoder).
     headers = {"X-Plex-Token": cfg["server_token"]}
@@ -431,10 +441,54 @@ def stream_get(cfg, sid, rest):
     return data, "video/mp2t"
 
 
+def jellyfin_stream_get(cfg, sid, stream, rest, query):
+    """Jellyfin's HLS: start.m3u8 is its master playlist (h264/aac in MPEG-TS,
+    sized for the screen, from the start); its playlists link relatively
+    (main.m3u8?..., hls1/main/0.ts?...) with their own query, passed back."""
+    jf = cfg["jellyfin"]
+    base = f"{jf['url']}/Videos/{jf_id(stream['key'])}/"
+    # The token goes in a header, never in a link the tablet (or the TV) sees.
+    q = [(k, v) for k, v in urllib.parse.parse_qsl(query) if k.lower() not in ("api_key", "apikey")]
+    if rest == "start.m3u8":
+        w, h = stream.get("size") or tablet_screen() or (1024, 768)
+        if stream.get("started"):
+            jellyfin_stream_stop(cfg, sid)  # the player starting over: a fresh transcode
+        stream["started"] = True
+        q = [("MediaSourceId", jf_id(stream["key"])), ("DeviceId", cfg["client_id"]), ("PlaySessionId", sid),
+             ("VideoCodec", "h264"), ("AudioCodec", "aac"), ("TranscodingMaxAudioChannels", "2"),
+             ("SegmentContainer", "ts"), ("MaxWidth", str(w)), ("MaxHeight", str(h)),
+             ("MaxStreamingBitrate", str((stream.get("bitrate") or STREAM_MAX_BITRATE) * 1000)),
+             ("StartTimeTicks", "0"), ("BreakOnNonKeyFrames", "true")]
+        rest = "master.m3u8"
+    url = base + rest + ("?" + urllib.parse.urlencode(q) if q else "")
+    data = fetch(url, headers=jf_auth(cfg, jf["token"]), timeout=60, raw=True)
+    stream["at"] = time.time()
+    if rest.endswith(".ts"):
+        meter_feed(stream, data)
+    if rest.endswith(".m3u8"):
+        data = re.sub(rb"https?://[^\s\"]*?/Videos/[0-9a-f]{32}/", b"", data)
+        data = re.sub(rb"([?&])(?:api_key|ApiKey)=[^&\s\"]*&?", rb"\1", data)
+        return data, "application/vnd.apple.mpegurl"
+    return data, "video/mp2t"
+
+
+def jellyfin_stream_stop(cfg, sid):
+    try:
+        req = urllib.request.Request(
+            f"{cfg['jellyfin']['url']}/Videos/ActiveEncodings?"
+            + urllib.parse.urlencode({"deviceId": cfg["client_id"], "playSessionId": sid}),
+            method="DELETE", headers={"User-Agent": UA, **jf_auth(cfg, cfg["jellyfin"]["token"])})
+        urllib.request.urlopen(req, timeout=10).close()
+    except (OSError, KeyError):
+        pass
+
+
 def stream_stop(cfg, sid):
     stream = streams.pop(sid, None)
     meter_done(stream)
-    if stream is not None:
+    if stream is not None and is_jf(stream["key"]):
+        jellyfin_stream_stop(cfg, sid)
+    elif stream is not None:
         try:
             fetch(f"{cfg['server_url']}/video/:/transcode/universal/stop?session={sid}",
                   headers=plex_headers(cfg, cfg["server_token"]), timeout=10)
@@ -579,6 +633,18 @@ screen_size = None
 
 
 def add_item(cfg, key):
+    if is_jf(key):
+        if not cfg.get("jellyfin"):
+            raise ValueError("Jellyfin isn't linked")
+        if not any(m["key"] == key for m in cfg["movies"]):
+            item = jf_item(cfg, jf_id(key))
+            if item.get("Type") not in JF_TYPES:
+                raise KeyError(key)  # only whole movies and shows go on the list
+            cfg["movies"].append({"key": key, "title": item["Name"], "year": item.get("ProductionYear"),
+                                  "kind": JF_TYPES[item["Type"]], "source": "jellyfin"})
+            cfg["movies"].sort(key=lambda m: m["title"].lower())
+            save(cfg)
+        return
     if not re.fullmatch(r"\d{1,12}", str(key or "")):
         raise ValueError("that isn't a Plex title")
     if not any(m["key"] == key for m in cfg["movies"]):
@@ -767,6 +833,22 @@ def use_profile(cfg, user_id):
     save(cfg)
 
 
+PLEX_KEYS = ("link", "account_token", "account", "profile_id", "profile", "server_id", "server_name",
+             "server_token", "server_url")
+
+
+def plex_public(cfg):
+    return {"linked": "account_token" in cfg, "account": cfg.get("account"), "profile": cfg.get("profile"),
+            "server": cfg.get("server_name"), "code": (cfg.get("link") or {}).get("code")}
+
+
+def plex_unlink(cfg):
+    for k in PLEX_KEYS:
+        cfg.pop(k, None)
+    save(cfg)
+    return plex_public(cfg)
+
+
 def pick_connection(cfg, server):
     """First server address that answers from here (the TV is on the same network)."""
     for conn in sorted(server.get("connections", []), key=lambda c: (c.get("relay", False), c.get("local", False))):
@@ -782,7 +864,24 @@ PLEX_TYPES = {"movie": 1, "show": 2}  # Plex library section type -> item type n
 
 
 def library(cfg, query):
-    """Movies and TV shows the profile can see (shows play a random episode)."""
+    """Movies and TV shows the Plex profile and the Jellyfin user can see
+    (shows play a random episode). One source failing doesn't hide the other."""
+    found, errors = [], []
+    for name, linked, search in (("Plex", cfg.get("server_token"), plex_library),
+                                 ("Jellyfin", cfg.get("jellyfin"), jellyfin_library)):
+        if linked:
+            try:
+                found += search(cfg, query)
+            except (OSError, ValueError, KeyError) as e:
+                print(f"{name} search: {e!r}", flush=True)
+                errors.append(name)
+    if errors and not found:
+        raise RuntimeError(f"can't reach {' or '.join(errors)}")
+    found.sort(key=lambda m: m["title"].lower())
+    return found[:300]
+
+
+def plex_library(cfg, query):
     url, token = cfg["server_url"], cfg["server_token"]
     found = []
     for s in plex_json(cfg, f"{url}/library/sections", token)["MediaContainer"].get("Directory", []):
@@ -794,8 +893,8 @@ def library(cfg, query):
         items = plex_json(cfg, f"{url}/library/sections/{s['key']}/all?{urllib.parse.urlencode(params)}", token)
         for m in items["MediaContainer"].get("Metadata", []):
             found.append({"key": m["ratingKey"], "title": m["title"], "year": m.get("year"),
-                          "rating": m.get("contentRating"), "thumb": m.get("thumb"), "kind": s["type"]})
-    found.sort(key=lambda m: m["title"].lower())
+                          "rating": m.get("contentRating"), "thumb": m.get("thumb"), "kind": s["type"],
+                          "source": "plex"})
     return found[:200]
 
 
@@ -804,6 +903,8 @@ last_episode = {}  # show key -> episode played last time, to avoid an instant r
 
 def show_episodes(cfg, show_key):
     """The show's episode keys, in order (season by season)."""
+    if is_jf(show_key):
+        return jellyfin_episodes(cfg, show_key)
     episodes = plex_json(cfg, f"{cfg['server_url']}/library/metadata/{int(show_key)}/allLeaves",
                          cfg["server_token"])["MediaContainer"].get("Metadata", [])
     if not episodes:
@@ -829,8 +930,233 @@ def pick_episode(cfg, show_key):
     return episode
 
 
+# ---- Jellyfin (the open-source alternative to Plex) ----------------------------------
+#
+# Linked with a Jellyfin user's name and password (only the access token is
+# kept, in the config, never sent to Android): use the kids' own Jellyfin user,
+# so its parental controls apply to what can be searched and added. Its titles
+# go on the same lists with keys "jf<item id>", and play like Plex's: on the
+# tablet as an HLS stream through the bridge (Movies & TV's player, the
+# loudness meter and next-episode all the same), on an LG paired for AirPlay
+# the same way, and otherwise in the TV's Jellyfin app (told what to play
+# through Jellyfin's remote control API, with a deep link as the fallback).
+
+JF_KEY = re.compile(r"jf[0-9a-f]{32}")
+JF_TYPES = {"Movie": "movie", "Series": "show"}
+JELLYFIN_ROKU_APP = "592369"
+LG_JELLYFIN_APP = "org.jellyfin.webos"
+
+
+def is_jf(key):
+    return bool(JF_KEY.fullmatch(str(key or "")))
+
+
+def jf_id(key):
+    if not is_jf(key):
+        raise ValueError("that isn't a Jellyfin title")
+    return key[2:]
+
+
+def jf_auth(cfg, token=None):
+    """Jellyfin's Authorization header (who's asking, and the token once linked)."""
+    fields = {"Client": PRODUCT, "Device": "Kids OS", "DeviceId": cfg["client_id"], "Version": "1.0"}
+    if token:
+        fields["Token"] = token
+    return {"Authorization": "MediaBrowser " + ", ".join(f'{k}="{v}"' for k, v in fields.items()),
+            "Accept": "application/json"}
+
+
+def jf_json(cfg, path, method="GET", body=None, params=None, timeout=15):
+    jf = cfg["jellyfin"]
+    url = jf["url"] + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    headers = jf_auth(cfg, jf["token"])
+    data = None
+    if body is not None:
+        data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers={"User-Agent": UA, **headers})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        text = r.read().decode(errors="replace")
+    return json.loads(text) if text.strip() else {}
+
+
+def jf_server_url(ref):
+    """A server address as typed ("192.168.0.10:8096", "https://jf.example.com/") made into a base URL."""
+    ref = str(ref or "").strip().rstrip("/")
+    if not ref:
+        raise ValueError("type the Jellyfin server's address")
+    if not re.match(r"https?://", ref):
+        ref = "http://" + ref
+    parsed = urllib.parse.urlparse(ref)
+    if not parsed.hostname:
+        raise ValueError("that isn't a server address")
+    if parsed.scheme == "http" and not parsed.port and parsed.path in ("", "/"):
+        ref += ":8096"  # Jellyfin's own port
+    return ref
+
+
+def jellyfin_link(cfg, server, username, password):
+    """Sign in as a Jellyfin user and keep its token (not the password)."""
+    url = jf_server_url(server)
+    try:
+        info = json.loads(fetch(url + "/System/Info/Public", headers={"Accept": "application/json"}, timeout=8))
+    except (OSError, ValueError) as e:
+        raise ValueError(f"no Jellyfin server answers at {url}") from e
+    req = urllib.request.Request(
+        url + "/Users/AuthenticateByName", method="POST",
+        data=json.dumps({"Username": str(username or ""), "Pw": str(password or "")}).encode(),
+        headers={"User-Agent": UA, "Content-Type": "application/json", **jf_auth(cfg)})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            auth = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 401, 403):
+            raise ValueError("Jellyfin didn't accept that name and password") from e
+        raise
+    cfg["jellyfin"] = {"url": url, "token": auth["AccessToken"], "user_id": auth["User"]["Id"],
+                       "user": auth["User"]["Name"], "server_name": info.get("ServerName") or "Jellyfin",
+                       "version": info.get("Version")}
+    save(cfg)
+    return jellyfin_public(cfg)
+
+
+def jellyfin_unlink(cfg):
+    jf = cfg.get("jellyfin")
+    if jf:
+        try:
+            jf_json(cfg, "/Sessions/Logout", "POST", timeout=5)  # the token stops working too
+        except OSError:
+            pass
+        cfg.pop("jellyfin")
+        save(cfg)
+    return jellyfin_public(cfg)
+
+
+def jellyfin_public(cfg):
+    jf = cfg.get("jellyfin")
+    return ({"linked": True, "server": jf["server_name"], "url": jf["url"], "user": jf["user"]} if jf
+            else {"linked": False})
+
+
+def jf_item(cfg, item_id):
+    found = jf_json(cfg, "/Items", params={"userId": cfg["jellyfin"]["user_id"], "ids": item_id,
+                                           "fields": "ProductionYear,OfficialRating"}).get("Items") or []
+    if not found:
+        raise ValueError("Jellyfin doesn't have that title (or this user can't see it)")
+    return found[0]
+
+
+def jellyfin_library(cfg, query):
+    params = {"userId": cfg["jellyfin"]["user_id"], "includeItemTypes": "Movie,Series", "recursive": "true",
+              "fields": "ProductionYear,OfficialRating", "sortBy": "SortName", "limit": 200}
+    if query:
+        params["searchTerm"] = query
+    return [{"key": "jf" + m["Id"], "title": m["Name"], "year": m.get("ProductionYear"),
+             "rating": m.get("OfficialRating"), "kind": JF_TYPES[m["Type"]], "source": "jellyfin"}
+            for m in jf_json(cfg, "/Items", params=params).get("Items", []) if m.get("Type") in JF_TYPES]
+
+
+def jellyfin_episodes(cfg, show_key):
+    episodes = jf_json(cfg, f"/Shows/{jf_id(show_key)}/Episodes",
+                       params={"userId": cfg["jellyfin"]["user_id"]}).get("Items", [])
+    if not episodes:
+        raise RuntimeError("that show has no episodes this Jellyfin user can see")
+    return ["jf" + e["Id"] for e in episodes]
+
+
+def jellyfin_tv_session(cfg, ip, wait):
+    """The TV's Jellyfin app, as a session the bridge's user may control (it
+    must be signed in as the same Jellyfin user), within `wait` seconds."""
+    end = time.time() + wait
+    while True:
+        try:
+            for s in jf_json(cfg, "/Sessions", params={"controllableByUserId": cfg["jellyfin"]["user_id"],
+                                                       "activeWithinSeconds": 120}, timeout=5):
+                if (s.get("RemoteEndPoint") or "").split(":")[0] == ip and s.get("SupportsRemoteControl"):
+                    return s["Id"]
+        except OSError:
+            pass
+        if time.time() >= end:
+            return None
+        time.sleep(1.5)
+
+
+def jellyfin_tv_start(cfg, item, key, tv):
+    """A Jellyfin title in the TV's own Jellyfin app (a Roku, or an LG not
+    paired for AirPlay): open the app with the title (a deep link), then have
+    it play from the start over Jellyfin's remote control. Not tried on a
+    real TV yet: the remote control part is Jellyfin's documented API."""
+    play_key = pick_episode(cfg, key) if item.get("kind") == "show" else key
+    item_id = jf_id(play_key)
+    ip, lg = tv["ip"], tv.get("kind") == "lg"
+    try:
+        if lg:
+            with lg_session(tv) as s:
+                s.launch(LG_JELLYFIN_APP)
+        else:
+            fetch(f"http://{ip}:8060/keypress/Home", "POST", timeout=5)
+            time.sleep(2.5)
+            q = urllib.parse.urlencode({"contentId": item_id,
+                                        "mediaType": "episode" if play_key != key else "movie"})
+            fetch(f"http://{ip}:8060/launch/{JELLYFIN_ROKU_APP}?{q}", "POST", timeout=5)
+    except (urllib.error.HTTPError, LGError) as e:
+        print(f"Jellyfin on the TV: {e!r}", flush=True)
+        return {"result": "plex_closed", "message": "Jellyfin isn't on the TV."}
+    session = jellyfin_tv_session(cfg, ip, 30)
+    playing = (lambda: lg_media(tv) in ("play", "buffer", "?")) if lg else \
+        (lambda: roku_player(ip)[0] in ("play", "buffer"))
+    if session:
+        for attempt in range(2):
+            jf_json(cfg, f"/Sessions/{session}/Playing", "POST",
+                    params={"playCommand": "PlayNow", "itemIds": item_id, "startPositionTicks": 0})
+            if wait_for(playing, 20):
+                return {"result": "playing", "message": "It's playing on the TV!"}
+            print("Jellyfin: not playing 20s after asking; asking again", flush=True)
+    elif wait_for(playing, 15):  # the deep link alone did it
+        return {"result": "playing", "message": "It's playing on the TV!"}
+    print(f"Jellyfin on the TV: {'no remote-control session from ' + ip if not session else 'not playing'}",
+          flush=True)
+    return {"result": "error", "message": "Jellyfin on the TV didn't start it. Is it signed in as the kids' user?"}
+
+
+def jellyfin_poster(cfg, key):
+    """The title's poster from Jellyfin; with none (a show it couldn't match), one
+    made from its wide art or its first episode's picture."""
+    jf, item_id = cfg["jellyfin"], jf_id(key)
+    image = lambda path, **q: fetch(f"{jf['url']}{path}?{urllib.parse.urlencode({'quality': 90, **q})}",
+                                    headers=jf_auth(cfg, jf["token"]), raw=True)
+    try:
+        return image(f"/Items/{item_id}/Images/Primary", fillWidth=400, fillHeight=600)
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+    wide = []
+    for kind in ("Backdrop", "Thumb"):
+        wide.append(f"/Items/{item_id}/Images/{kind}")
+    try:
+        wide += [f"/Items/{e[2:]}/Images/Primary" for e in jellyfin_episodes(cfg, key)[:1]]
+    except (OSError, ValueError, RuntimeError):
+        pass  # a movie
+    for path in wide:
+        try:
+            return netflix_poster(image(path, maxWidth=800), strip=(170, 92, 195))
+        except urllib.error.HTTPError:
+            continue
+    raise KeyError(key)
+
+
 def poster(cfg, key):
     POSTERS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if is_jf(key):
+        path = POSTERS / f"{key}.jpg"
+        if not path.exists():
+            if not any(m["key"] == key for m in cfg["movies"]):
+                raise KeyError(key)
+            data = jellyfin_poster(cfg, key)
+            tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
+            tmp.write_bytes(data)
+            tmp.replace(path)
+            return data
+        return path.read_bytes()
     netflix = key.startswith("nf")
     # ".2": Netflix shows now get real posters, so the old composites are skipped.
     path = POSTERS / (f"nf{int(key[2:])}.2.jpg" if netflix else f"{int(key)}.jpg")
@@ -881,9 +1207,10 @@ def tvmaze_poster(title):
     return out.getvalue()
 
 
-def netflix_poster(art):
-    """A 400x600 poster from Netflix's wide title art: the art across the middle
-    over a blurred, darkened copy of itself, with a Netflix-red strip at the bottom."""
+def netflix_poster(art, strip=(229, 9, 20)):
+    """A 400x600 poster from wide title art (Netflix's, or a Jellyfin title's with no
+    poster): the art across the middle over a blurred, darkened copy of itself,
+    with a strip at the bottom (Netflix red, Jellyfin purple)."""
     from PIL import Image, ImageDraw, ImageFilter
     wide = Image.open(io.BytesIO(art)).convert("RGB")
     scale = max(400 / wide.width, 600 / wide.height)
@@ -893,7 +1220,7 @@ def netflix_poster(art):
     back = Image.blend(back, Image.new("RGB", (400, 600), "black"), 0.35)
     front = wide.resize((400, round(wide.height * 400 / wide.width)))
     back.paste(front, (0, (600 - front.height) // 2))
-    ImageDraw.Draw(back).rectangle((0, 588, 400, 600), fill=(229, 9, 20))
+    ImageDraw.Draw(back).rectangle((0, 588, 400, 600), fill=strip)
     out = io.BytesIO()
     back.save(out, "JPEG", quality=88)
     return out.getvalue()
@@ -1421,6 +1748,14 @@ def system_status():
         except OSError:
             plex["reachable"] = False
     out["plex"] = plex
+    jf = cfg.get("jellyfin")
+    out["jellyfin"] = {"linked": bool(jf), "server": jf and jf["server_name"], "reachable": None}
+    if jf:
+        try:
+            fetch(jf["url"] + "/System/Info/Public", timeout=4)
+            out["jellyfin"]["reachable"] = True
+        except OSError:
+            out["jellyfin"]["reachable"] = False
     try:
         stamp, commit, result = LAST_UPDATE.read_text().split(maxsplit=2)
         out["update"] = {"at": int(stamp), "commit": commit, "result": result.strip()}
@@ -1528,6 +1863,9 @@ def start(cfg, key):
             return {"result": "error", "message": "Netflix isn't on the TV."}
         threading.Thread(target=netflix_from_start, args=(tv["ip"],), daemon=True).start()
         return {"result": "playing", "message": "It's starting on the TV!"}
+
+    if is_jf(key):
+        return jellyfin_tv_start(cfg, item, key, tv)
 
     # Plex on the Roku only plays a command cleanly from a fresh start with a
     # profile picked on its "Who's watching?" screen. Already open, or
@@ -2294,7 +2632,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if route[1] == "hls-stop":
                     stream_stop(cfg, sid)
                     return self.reply(200, {"ok": True})
-                return self.reply(200, *stream_get(cfg, sid, "/".join(parts[2:])))
+                return self.reply(200, *stream_get(cfg, sid, "/".join(parts[2:]), path.query))
             if route == ("GET", "hls-gain"):
                 return self.reply(200, {"gain_db": loudness_gain(parts[1] if len(parts) > 1 else "")})
             if route == ("POST", "hls-next"):
@@ -2379,6 +2717,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return 200, {"themes": cfg["themes"]}
         if route == ("GET", "setup"):
             return 200, {"linked": "account_token" in cfg, "account": cfg.get("account"),
+                         "jellyfin": jellyfin_public(cfg),
                          "profile": cfg.get("profile"), "server": cfg.get("server_name"),
                          "tv": {k: v for k, v in cfg["tv"].items() if k not in TV_SECRETS} if cfg.get("tv") else None,
                          "movies": len(cfg["movies"]),
@@ -2396,6 +2735,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == ("POST", "profile"):
             use_profile(cfg, arg)
             return 200, {"profile": cfg["profile"], "server": cfg["server_name"]}
+        if route == ("GET", "jellyfin"):
+            return 200, jellyfin_public(cfg)
+        if route == ("POST", "jellyfin"):
+            body = self.body_json()
+            return 200, jellyfin_link(cfg, body.get("url"), body.get("username"), body.get("password"))
+        if route == ("DELETE", "jellyfin"):
+            return 200, jellyfin_unlink(cfg)
         if route == ("GET", "tvs"):
             return 200, {"tvs": discover_tvs()}
         if route == ("GET", "library"):
@@ -2597,6 +2943,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if route == ("DELETE", "items"):
                 remove_item(cfg, arg)
                 return self.reply(200, {"count": len(cfg["movies"])})
+            if route == ("GET", "plex"):
+                return self.reply(200, plex_public(cfg.root))
+            if route == ("POST", "plex-link"):
+                return self.reply(200, link_start(cfg.root))
+            if route == ("GET", "plex-link"):
+                return self.reply(200, {**link_poll(cfg.root), **plex_public(cfg.root)})
+            if route == ("GET", "plex-profiles"):
+                if "account_token" not in cfg.root:
+                    raise ValueError("link Plex first")
+                return self.reply(200, {"profiles": profiles(cfg.root), **plex_public(cfg.root)})
+            if route == ("POST", "plex-profile"):
+                if "account_token" not in cfg.root or not re.fullmatch(r"\d{1,12}", arg or ""):
+                    raise ValueError("choose one of the profiles")
+                use_profile(cfg.root, arg)
+                return self.reply(200, plex_public(cfg.root))
+            if route == ("DELETE", "plex"):
+                return self.reply(200, plex_unlink(cfg.root))
+            if route == ("GET", "jellyfin"):
+                return self.reply(200, jellyfin_public(cfg.root))
+            if route == ("POST", "jellyfin"):
+                body = self.body_json()
+                return self.reply(200, jellyfin_link(cfg.root, body.get("url"), body.get("username"),
+                                                     body.get("password")))
+            if route == ("DELETE", "jellyfin"):
+                return self.reply(200, jellyfin_unlink(cfg.root))
             if route == ("POST", "netflix"):
                 key = add_netflix(cfg, self.body_json().get("ref", ""))
                 return self.reply(200, {"key": key, "count": len(cfg["movies"])})
@@ -2640,9 +3011,10 @@ LG_PLEX_APP = "cdp-30"
 LG_NETFLIX_APP = "netflix"
 LG_YOUTUBE_APP = "youtube.leanback.v4"
 LG_APP_NAMES = {LG_PLEX_APP: "Plex", LG_NETFLIX_APP: "Netflix", LG_YOUTUBE_APP: "YouTube",
+                "org.jellyfin.webos": "Jellyfin",
                 "com.webos.app.home": "home screen", "com.webos.app.livetv": "Live TV"}
 # What's on the LG, as a kind of video for its volume (AirPlay is our Plex stream).
-LG_APP_KINDS = {"airplay": "plex", LG_PLEX_APP: "plex", LG_NETFLIX_APP: "netflix", LG_YOUTUBE_APP: "youtube"}
+LG_APP_KINDS = {"airplay": "plex", LG_PLEX_APP: "plex", "org.jellyfin.webos": "plex", LG_NETFLIX_APP: "netflix", LG_YOUTUBE_APP: "youtube"}
 LG_PLAY_STATES = {"playing": "play", "paused": "pause", "loaded": "buffer", "buffering": "buffer"}
 LG_PAIRING_WAIT = 60  # seconds to press Accept on the TV
 LG_PERMISSIONS = [
@@ -3033,7 +3405,9 @@ def lg_start(cfg, item, key, tv):
         # (No rewind to the start: the LG doesn't say where playback is.)
         return {"result": "playing", "message": "It's starting on the TV!"}
     if tv.get("airplay"):
-        return airplay_start(cfg, item, key, tv)
+        return airplay_start(cfg, item, key, tv)  # Plex and Jellyfin alike
+    if is_jf(key):
+        return jellyfin_tv_start(cfg, item, key, tv)
 
     # Not paired for AirPlay: the TV's own Plex app (its webOS app takes no remote
     # plays as of 2026-11, so this only works if a Plex update brings that back).
@@ -3407,6 +3781,8 @@ def lg_cli(args):
 def check():
     """Every step of a play except the final command to the TV (nothing changes on screen)."""
     cfg = load()
+    plex_items = [m for m in cfg["movies"] if m.get("kind") != "netflix" and not is_jf(m["key"])]
+    jf_items = [m for m in cfg["movies"] if is_jf(m["key"])]
     steps = [
         ("Plex account linked", lambda: cfg.get("account") or None),
         ("profile and server", lambda: f"{cfg['profile']} on {cfg['server_name']} via {cfg['server_url']}"),
@@ -3417,20 +3793,31 @@ def check():
         ("TV", lambda: (lambda tv: tv and f"{tv['location']} / {tv['name']} at {tv['ip']}: {tv['power']}")(
             find_tv(cfg))),
         ("Plex open on the TV", lambda: companion_id(cfg["tv"]["ip"])),
-        ("reset to start", lambda: (lambda plex: str(reset_progress(
-            cfg, plex[0]["key"] if plex[0].get("kind") != "show" else pick_episode(cfg, plex[0]["key"]))))(
-            [m for m in cfg["movies"] if m.get("kind") != "netflix"])),
+        ("reset to start", lambda: str(reset_progress(
+            cfg, plex_items[0]["key"] if plex_items[0].get("kind") != "show"
+            else pick_episode(cfg, plex_items[0]["key"]))) if plex_items else "no Plex titles on the list"),
         ("TV shows pick a random episode", lambda: ", ".join(
             f"{m['title']} -> episode {pick_episode(cfg, m['key'])}" for m in cfg["movies"]
             if m.get("kind") == "show") or "no shows on the list"),
         ("Netflix on the TV", lambda: {True: "yes", False: None, None: "can't tell (app list blocked)"}[
             roku_info(cfg["tv"]["ip"]).get("netflix")]),
     ]
+    plex_steps = ("Plex account linked", "profile and server", "server answers as the profile",
+                  "Plex open on the TV", "reset to start")
+    if not cfg.get("account") and cfg.get("jellyfin"):
+        steps = [s for s in steps if s[0] not in plex_steps]  # a Jellyfin-only box
+    if cfg.get("jellyfin"):
+        jf = cfg["jellyfin"]
+        steps[0:0] = [
+            ("Jellyfin linked", lambda: f"{jf['user']} on {jf['server_name']} via {jf['url']}"),
+            ("Jellyfin answers as that user", lambda: f"{len(jellyfin_library(cfg, ''))} movies and shows"),
+            ("Jellyfin titles on the list", lambda: len(jf_items) or "none yet"),
+        ]
     if (cfg.get("tv") or {}).get("kind") == "lg":
         steps = [s for s in steps if s[0] not in ("Plex open on the TV", "Netflix on the TV")]
         steps.append(("LG TV apps", lambda: lg_apps(cfg["tv"])))
-        steps.append(("Plex on the LG", lambda: "over AirPlay" if cfg["tv"].get("airplay") else
-                      "not paired over AirPlay (--lg airplay-pair); falls back to the TV's Plex app"))
+        steps.append(("Plex/Jellyfin on the LG", lambda: "over AirPlay" if cfg["tv"].get("airplay") else
+                      "not paired over AirPlay (--lg airplay-pair); falls back to the TV's own app"))
     ok = True
     for name, step in steps:
         try:
@@ -3452,6 +3839,23 @@ def main():
         raise SystemExit("portal PIN set")
     if "--check" in sys.argv:
         raise SystemExit(check())
+    if "--jellyfin" in sys.argv:
+        # sudo -u tablet-movies tablet-movies-bridge --jellyfin http://server:8096 kids   (asks the password)
+        # sudo -u tablet-movies tablet-movies-bridge --jellyfin off
+        args = sys.argv[sys.argv.index("--jellyfin") + 1:]
+        cfg = load()
+        if args[:1] == ["off"]:
+            jellyfin_unlink(cfg)
+            raise SystemExit("Jellyfin unlinked")
+        if len(args) < 2:
+            raise SystemExit("usage: --jellyfin <server address> <user>  |  --jellyfin off")
+        import getpass
+        password = sys.stdin.readline().rstrip("\n") if not sys.stdin.isatty() else getpass.getpass("Password: ")
+        try:
+            print(jellyfin_link(cfg, args[0], args[1], password))
+        except ValueError as e:
+            raise SystemExit(str(e))
+        raise SystemExit(0)
     if "--lg" in sys.argv:
         raise SystemExit(lg_cli(sys.argv[sys.argv.index("--lg") + 1:]))
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
