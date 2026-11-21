@@ -122,7 +122,7 @@ stay_on="$(waydroid shell -- settings get global stay_on_while_plugged_in 2>/dev
 waydroid shell -- svc power stayon true || true
 ( while sleep 5; do waydroid container unfreeze >/dev/null 2>&1; done ) &
 unfreezer=$!
-trap 'kill $unfreezer 2>/dev/null' EXIT
+trap 'kill $unfreezer 2>/dev/null || true' EXIT
 
 for app in "${APPS[@]}"; do
   install -D -m 644 "/usr/local/share/tablet-os/$app.apk" "$SHARED/local/tmp/$app.apk"
