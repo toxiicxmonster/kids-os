@@ -20,6 +20,13 @@ gitignored.)
   port. With Windows Hypervisor Platform, never take live snapshots (the VM
   hangs); snapshot only when powered off.
 
+- **Stress testing** (dev VM): `tools/stress-bridge.py` (concurrent reads and
+  writes, malformed input on every route, an idle-connection flood, stream
+  start/stop; no 500s expected) and a monkey run over the kid apps (`monkey -p
+  org.tabletos.home -p org.tabletos.movies -p org.tabletos.dance -p
+  org.tabletos.paint ... --pct-syskeys 0 --pct-nav 0`), both with movie time on
+  and paused; check `logcat -b crash` and `am_anr`.
+
 ## The pieces
 
 - **Kid session**: GDM session `tablet-kiosk` → `tablet-kiosk-session` (Cage, with
