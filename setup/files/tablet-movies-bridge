@@ -646,7 +646,7 @@ def add_item(cfg, key):
             save(cfg)
         return
     if not re.fullmatch(r"\d{1,12}", str(key or "")):
-        raise ValueError("that isn't a Plex title")
+        raise ValueError("that isn't a Plex or Jellyfin title")
     if not any(m["key"] == key for m in cfg["movies"]):
         try:
             item = plex_json(cfg, f"{cfg['server_url']}/library/metadata/{int(key)}",

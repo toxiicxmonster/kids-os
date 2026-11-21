@@ -123,6 +123,21 @@ gitignored.)
   Openclipart set). Parents manage the shared list on the web page's Coloring
   tab. publicdomainpictures.net search is behind a Cloudflare challenge, but
   its picture links work through "Add your own page".
+- **Jellyfin** (next to Plex; either or both): linked with a Jellyfin user's
+  name and password (web page Settings, `--jellyfin <server> <user>`); only the
+  token is kept (`cfg["jellyfin"]`). Its titles are `jf<item id>` on the
+  lists (`is_jf`), with `"source": "jellyfin"`. Tablet and AirPlay streams:
+  `/api/hls/<session>/start.m3u8` is Jellyfin's `master.m3u8` (h264/aac,
+  MPEG-TS, StartTimeTicks 0); its playlists link relatively *with a query*
+  (`main.m3u8?…`, `hls1/main/0.ts?…`), so `stream_get` passes the query on
+  and the token goes in the Authorization header, never in a link. Stop is
+  `DELETE /Videos/ActiveEncodings`. On a Roku, or an LG without AirPlay, the
+  TV's Jellyfin app is opened (Roku deep link `launch/592369?contentId=`;
+  LG `org.jellyfin.webos`) and sent `PlayNow` through `/Sessions` (it must be
+  signed in as the same user); not yet tried on a real TV. Shows with no
+  Jellyfin poster get one made from their wide art (purple strip). Tested
+  2026-11-21 on the dev VM against Jellyfin 12.4 (`apt` from
+  repo.jellyfin.org, test media in `/srv/media`, user `kids`).
 - **Loudness**: Plex is far quieter than YouTube (2026-11-20, ebur128 on the
   transcoder's output: a Bluey episode -32 LUFS, Despicable Me -18; YouTube
   Kids logs songs at -14 to -24). The transcoder's `audioBoost` changes

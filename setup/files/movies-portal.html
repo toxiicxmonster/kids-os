@@ -260,7 +260,7 @@
         <section class="card">
           <h2>➕ Add movies and shows</h2>
           <div class="search">
-            <input id="q" type="search" placeholder="Search your Plex and Jellyfin movies" enterkeyhint="search">
+            <input id="q" type="search" placeholder="Search movies and shows" enterkeyhint="search">
             <button class="primary" id="searchBtn">Search</button>
           </div>
           <div id="results"></div>
@@ -781,6 +781,7 @@ function showPlex(r) {
   $("plexLinkBtn").hidden = r.linked || !!r.code;
   $("plexProfileBtn").hidden = !r.linked;
   $("plexUnlinkBtn").hidden = !r.linked && !r.code;
+  $("plexUnlinkBtn").textContent = r.linked ? "Unlink" : "Cancel";
   if (r.linked && !r.profile && !$("plexProfiles").childElementCount) showPlexProfiles().catch(oops);
 }
 async function loadPlex() {
@@ -819,7 +820,8 @@ $("plexLinkBtn").onclick = () => busy($("plexLinkBtn"), async () => {
 });
 $("plexProfileBtn").onclick = () => busy($("plexProfileBtn"), showPlexProfiles);
 $("plexUnlinkBtn").onclick = () => busy($("plexUnlinkBtn"), async () => {
-  if (!await confirmBox("Unlink Plex?", "Plex titles on the lists stop playing until it's linked again.", "Unlink", true)) return;
+  if ($("plexUnlinkBtn").textContent === "Unlink"
+      && !await confirmBox("Unlink Plex?", "Plex titles on the lists stop playing until it's linked again.", "Unlink", true)) return;
   clearInterval(plexPolling); $("plexProfiles").replaceChildren();
   showPlex(await api("DELETE", "plex")); toast("Unlinked");
 });

@@ -29,22 +29,25 @@ lands straight in their own Android; nothing else on the PC is reachable.
   garden, mermaid and sweets. A floating home button leaves any app.
 - **Movies & TV**: a tap plays the title on the living-room TV, a **Roku** or an
   **LG webOS** TV.
-  - Plex titles always start from the beginning, and shows go on to the next
-    episode. On an LG, Plex plays over AirPlay.
+  - Movies and shows come from **Plex** or **Jellyfin** (or both). They always
+    start from the beginning, and shows go on to the next episode. On an LG,
+    they play over AirPlay.
   - Netflix titles open by deep link, and are rewound to the start on a Roku if
     Netflix resumes partway in.
   - The kid's **favorites** (picked twice or more in the last month) come first.
   - Netflix shows get proper portrait posters, from TVmaze.
 - **Watching on the tablet**: while the parents have paused movie time (or there
   is no TV), picks play on the tablet itself.
-  - Plex plays in Movies & TV's own simple player: big 🏠 and ⏸/▶, no seek bar.
+  - Plex and Jellyfin play in Movies & TV's own simple player: big 🏠 and ⏸/▶,
+    no seek bar.
   - Songs play in YouTube Kids behind a shield that swallows every tap, so the
     only way out is 🏠. When the song ends, the kid is back in Dance.
-- **Even volume**: Plex is often far quieter than YouTube.
-  - The box measures each Plex title's loudness (EBU R128) as it streams, and
+- **Even volume**: movies and shows are often far quieter than YouTube.
+  - The box measures each Plex or Jellyfin title's loudness (EBU R128) as it
+    streams, and
     the tablet's player turns quiet titles up and loud ones down.
-  - On an LG TV, it remembers a TV volume for each kind of video (Plex, Netflix,
-    YouTube) and switches to it before the next pick.
+  - On an LG TV, it remembers a TV volume for each kind of video (movies,
+    Netflix, YouTube) and switches to it before the next pick.
 - **Paint**: fill and brush tools, 20 colors (skin tones included), undo (wiping
   the page included), and blank paper or coloring pages. Pages are downloaded
   to the box once and turned into clean black lines, so fills stop at the edges
@@ -94,9 +97,12 @@ lands straight in their own Android; nothing else on the PC is reachable.
       on.
   - **Settings**:
     - The **schedule**: allowed hours and a daily limit.
+    - **Plex and Jellyfin**: link Plex (a plex.tv/link code) and choose the
+      kids' profile, or link the kids' Jellyfin user.
     - **The TV**: find TVs on the network, choose one (an LG asks you to press
       Accept), and pair AirPlay with the PIN the TV shows.
-    - A health card: TV, Plex, last update, disk, and the last automatic fix.
+    - A health card: TV, Plex or Jellyfin, last update, disk, and the last
+      automatic fix.
     - **Restart / shut down** the box.
 - **Parent desktop** (GNOME, password-protected):
   - "Kid Tablet (parent mode)" to install and approve apps in a kid's Android.
@@ -131,10 +137,12 @@ artwork isn't ours to publish. The coloring pages shown are public domain
     → Network access: **Default**.
     In the Roku's Plex app, turn "Automatically sign in" off.
   - **LG webOS**: General → Devices → External Devices: "TV On With Mobile" /
-    "LG Connect Apps" on. Plex plays over AirPlay, paired once from the web page.
-- **Optional sources**: a Plex server, Netflix and
-  YouTube on the TV, and the Plex and YouTube Kids Android apps for watching on
-  the tablet.
+    "LG Connect Apps" on. Plex and Jellyfin play over AirPlay, paired once from
+    the web page.
+  - **Jellyfin on the TV** (a Roku, or an LG not paired for AirPlay): install
+    the Jellyfin app and sign it in as the same Jellyfin user as the box.
+- **Optional sources**: a **Plex** or **Jellyfin** server (or both), Netflix
+  and YouTube on the TV, and YouTube Kids on the tablet for songs.
 
 ## Installing
 
@@ -206,13 +214,15 @@ home screen.
    Family Link one), turn on Play parental controls, install apps (PBS KIDS
    Games, Khan Academy Kids, …), and switch on "In carousel" for the ones the
    kid should see.
-3. **Movies & TV** (in parent mode): link Plex (a code for plex.tv/link) and
-   pick the kid's profile. Set the **web page PIN** under "Phone & web control",
-   or run `sudo -u tablet-movies tablet-movies-bridge --set-pin 1234`.
+3. **The web page PIN**: in parent mode, open Movies & TV → "Phone & web
+   control", or run `sudo -u tablet-movies tablet-movies-bridge --set-pin 1234`.
 4. **The web page**: open `http://<box>.local:8766/` on your phone and enter the
-   PIN.
-   - In **Settings → TV**, find and choose the TV. An LG needs Accept pressed on
-     the TV, then **Pair AirPlay** for Plex.
+   PIN. Everything else is set up there:
+   - **Settings → Plex**: link (a code for plex.tv/link), then choose the kids'
+     profile. **Settings → Jellyfin**: the server's address and the kids'
+     Jellyfin user. (One or both; Movies & TV in parent mode can link Plex too.)
+   - **Settings → TV**: find and choose the TV. An LG needs Accept pressed on
+     the TV, then **Pair AirPlay** for Plex and Jellyfin.
    - In **Lists**, add movies, shows, Netflix links, songs and coloring pages.
 5. **More kids**: open the **Users** app on the parent desktop. Each new kid
    starts with a copy of the first kid's Android.
@@ -253,11 +263,11 @@ MIT, see `LICENSE`.
 
 ## Not affiliated
 
-Not affiliated with or endorsed by Plex, Netflix, YouTube, Roku, LG, Apple, PBS
+Not affiliated with or endorsed by Plex, Jellyfin, Netflix, YouTube, Roku, LG, Apple, PBS
 KIDS, Danny Go!, Crayola, TVmaze or Openclipart.
 - **Nothing is downloaded** from YouTube or Netflix: titles play in the TV's own
   apps, or in YouTube Kids on the tablet.
-- **Plex** streams come from your own server.
+- **Plex** and **Jellyfin** streams come from your own server.
 - **Crayola's coloring pages** are free for personal use. Each box downloads
   only the ones its parents pick, for its own kids, and none are included in
   this repository.
