@@ -141,6 +141,25 @@ def on_press():
 # ---- screen sleep ---------------------------------------------------------------
 
 screen = {"dark": False, "last": time.monotonic()}
+# While the screen sleeps: "<idle since> <dark since>" (epoch), refreshed every
+# 15 s, so the bridge doesn't count it as tablet time (gone when it wakes).
+SCREEN_DARK = "/var/lib/tablet-movies/screen-dark"
+
+
+def mark_dark(dark, idle_since=None):
+    try:
+        if not dark:
+            os.unlink(SCREEN_DARK)
+        elif idle_since is not None:
+            tmp = SCREEN_DARK + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(f"{idle_since:.0f} {time.time():.0f}\n")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, SCREEN_DARK)
+        else:
+            os.utime(SCREEN_DARK)  # still dark
+    except OSError:
+        pass
 
 
 def kid_on_screen():
@@ -173,9 +192,12 @@ def sound_playing(kid):
 def go_dark():
     """Tablet Home fades the screen to black; the next touch only brings it back.
     (Cage, the kiosk compositor, can't switch the monitor itself off.)"""
+    idle_since = time.time() - (time.monotonic() - screen["last"])
     result = subprocess.run(["waydroid", "shell", "--", "am", "broadcast", "-n",
                              "org.tabletos.home/.ScreenReceiver"], capture_output=True, text=True, timeout=30)
     screen["dark"] = result.returncode == 0
+    if screen["dark"]:
+        mark_dark(True, idle_since)
     print("screen dark (idle)" if screen["dark"] else f"screen sleep failed: {result.stderr.strip()}", flush=True)
 
 
@@ -184,6 +206,7 @@ def touched():
     screen["last"] = time.monotonic()
     if screen["dark"]:
         screen["dark"] = False
+        mark_dark(False)
         return True
     return False
 
@@ -191,7 +214,10 @@ def touched():
 async def sleep_when_idle():
     while IDLE_SECONDS:
         await asyncio.sleep(15)
-        if screen["dark"] or time.monotonic() - screen["last"] < IDLE_SECONDS:
+        if screen["dark"]:
+            mark_dark(True)
+            continue
+        if time.monotonic() - screen["last"] < IDLE_SECONDS:
             continue
         kid = kid_on_screen()
         if kid and not sound_playing(kid):
@@ -271,6 +297,7 @@ async def restart_gdm_when_free():
 
 
 async def main():
+    mark_dark(False)  # (a leftover from before a restart)
     known = set(evdev.list_devices())
     tasks = [watch_hotplug(known), restart_gdm_when_free(), sleep_when_idle()]
     for kind, dev in input_devices():

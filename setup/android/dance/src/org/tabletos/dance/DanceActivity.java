@@ -1,6 +1,8 @@
 package org.tabletos.dance;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -451,7 +453,7 @@ public class DanceActivity extends Activity {
             switch (status) {
                 case "playing":
                     flash("Let's dance! 🎶", 0, true);
-                    ui.postDelayed(this::finish, 2500);
+                    ui.postDelayed(this::goHome, 2500);
                     break;
                 case "sleeping":
                     flash("The tablet is sleeping 🌙\nSee you later!", 0, false);
@@ -477,8 +479,7 @@ public class DanceActivity extends Activity {
         call("POST", "/dance-local/" + id, result -> {
             String status = result == null ? "error" : result.optString("result");
             if ("ok".equals(status) && openInYouTubeKids(id, result.optInt("duration"))) {
-                ui.postDelayed(this::finish, 1500);  // back to the carousel underneath
-                return;
+                return;  // (Dance closes once YouTube Kids is open)
             }
             playing = false;
             switch (status) {
@@ -512,18 +513,45 @@ public class DanceActivity extends Activity {
     }
 
     private boolean start(Intent intent, int seconds) {
-        try {
-            startActivity(intent);
-            // Tablet Home covers the screen until it plays, then keeps a clear shield over
-            // YouTube Kids (only its home button works) and brings Dance back after the song.
-            sendBroadcast(new Intent().setClassName("org.tabletos.home", "org.tabletos.home.PlayerCover")
-                    .putExtra("package", YOUTUBE_KIDS).putExtra("seconds", seconds)
-                    .putExtra("back", getPackageName()));
-            return true;
-        } catch (Exception e) {  // not found, or refused by the kiosk's lock task
-            Log.w(TAG, "couldn't open " + intent, e);
+        if (intent.resolveActivity(getPackageManager()) == null) {
             return false;
         }
+        // Its own task, fresh each time: never stacked inside Dance's (where a
+        // paused YouTube Kids came back when Dance finished, with no home button).
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        // Tablet Home covers the screen until it plays, then keeps a clear shield over
+        // YouTube Kids (only its home button works) and brings Dance back after the song.
+        // It also lets YouTube Kids into the kiosk's lock task, so open it once it answers.
+        Intent cover = new Intent().setClassName("org.tabletos.home", "org.tabletos.home.PlayerCover")
+                .putExtra("package", YOUTUBE_KIDS).putExtra("seconds", seconds)
+                .putExtra("back", getPackageName());
+        sendOrderedBroadcast(cover, null, new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent answer) {
+                try {
+                    startActivity(intent);
+                    // Out of the way: Tablet Home opens Dance again after the song.
+                    ui.postDelayed(DanceActivity.this::finish, 1500);
+                } catch (Exception e) {  // refused by the kiosk's lock task
+                    Log.w(TAG, "couldn't open " + intent, e);
+                    playing = false;
+                    flash("Oops! That didn't work.\nAsk a grown-up.", 6000, false);
+                }
+            }
+        }, ui, Activity.RESULT_OK, null, null);
+        return true;
+    }
+
+    /** Back to the carousel (on purpose: finishing alone shows whatever task is next). */
+    private void goHome() {
+        Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(home);
+        } catch (Exception e) {
+            Log.w(TAG, "no home", e);
+        }
+        finish();
     }
 
     private boolean installed(String pkg) {
@@ -569,7 +597,7 @@ public class DanceActivity extends Activity {
         home.setBackground(circle);
         home.setElevation(dp(10));
         home.setContentDescription("Home");
-        home.setOnClickListener(v -> tapFeedback(v, this::finish));
+        home.setOnClickListener(v -> tapFeedback(v, this::goHome));
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(96), dp(96), Gravity.TOP | Gravity.START);
         lp.setMargins(dp(24), dp(24), 0, 0);
         home.setLayoutParams(lp);

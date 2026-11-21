@@ -43,10 +43,18 @@ gitignored.)
   parent routes need loopback or the parent on the desktop; the web page
   needs a home-network client and the PIN. Per-kid state goes through
   `KidView` (lists) and `kid_settings` (schedule, overrides). The web page has
-  bottom tabs (Home, Lists, Activity, Settings); Settings → Power restarts or
+  bottom tabs (Home, Lists, Activity, Settings); Home has the TV's volume
+  (LG: level and mute over SSAP `audio/*`; Roku: Volume keys only, no level),
+  Settings → TV finds and chooses the TV (`choose_tv`, the same as Movies &
+  TV setup) and pairs AirPlay in two steps (start: `tablet-airplay pair`
+  waits on stdin; then the PIN), Settings → Power restarts or
   shuts down the box via the root `tablet-power` (.path unit; a running
-  `tablet-update` finishes first). Minute-by-minute usage and history live
-  in their own files (config writes re-trigger the login-screen sync).
+  `tablet-update` finishes first). Minute-by-minute usage, history, TV
+  volumes and loudness live in their own files (config writes re-trigger the
+  login-screen sync). Usage isn't counted while the screen sleeps
+  (`tablet-parent-switch` keeps `/var/lib/tablet-movies/screen-dark`, "<idle
+  since> <dark since>", fresh while dark; the idle stretch before it is taken
+  back off) or while the sleeping moon is up.
 - **Watching on the tablet**: while movie time is paused or no TV is set up
   (`tablet_mode`, `"local"` in `/api/movies` and `/api/dance`), picks play on
   the tablet. `POST /api/play-local/<key>` / `dance-local/<id>` check tablet
@@ -76,10 +84,16 @@ gitignored.)
     can't be used: none of its links start a title (tested on the Dell).
   - **Dance** hands the song to YouTube Kids (one song, no party):
     `https://kids.youtube.com/watch?v=<id>` starts it at once (youtube.com
-    links don't resolve there). Tablet Home puts YouTube Kids (and Plex) on
-    the lock-task allowlist (`PlayerCover.PLAYERS`) without adding them to the
-    carousel; after the hand-off Dance broadcasts to Tablet Home's
-    `PlayerCover`: a themed overlay swallows every tap until media sound has
+    links don't resolve there).
+    YouTube Kids opens in its own fresh task (`NEW_TASK | CLEAR_TASK`):
+    stacked inside Dance's task, a paused YouTube Kids came back when Dance
+    later finished (a TV pick), autoplaying with no shield and no home
+    button (2026-11-20). The players (`PlayerCover.PLAYERS`) are on the
+    lock-task allowlist only during a hand-off: Dance sends an ordered
+    broadcast to Tablet Home's `PlayerCover`, which allows them and answers,
+    and only then opens YouTube Kids; Tablet Home back on screen takes them
+    off again, which makes Android clear their tasks. Dance's 🏠 goes home on
+    purpose (finishing alone shows whatever task is next). `PlayerCover` then: a themed overlay swallows every tap until media sound has
     run 1.5 s, with the floating home button (`HomeBubble`) on top while the
     player is open; after 90 s with no sound it says to tap home. For YouTube
     Kids the overlay then turns clear but stays, still swallowing taps (its
@@ -102,6 +116,19 @@ gitignored.)
   Openclipart set). Parents manage the shared list on the web page's Coloring
   tab. publicdomainpictures.net search is behind a Cloudflare challenge, but
   its picture links work through "Add your own page".
+- **Loudness**: Plex is far quieter than YouTube (2026-11-20, ebur128 on the
+  transcoder's output: a Bluey episode -32 LUFS, Despicable Me -18; YouTube
+  Kids logs songs at -14 to -24). The transcoder's `audioBoost` changes
+  nothing. So the bridge meters every Plex stream's audio as its segments
+  pass (`Meter`: ffmpeg `ebur128` on a pipe, from stage 36) and keeps each
+  title's and show's loudness (`loudness.json`); Movies & TV's player asks
+  `GET /api/hls-gain/<session>` and boosts (`LoudnessEnhancer`) or softens
+  toward -18 LUFS. On the TV only its volume can help: on an LG the bridge
+  keeps a volume per kind (Plex/AirPlay, Netflix, YouTube) from what the TV
+  was at while that kind played, and sets it before the next pick of that
+  kind (`tv-levels.json`, the web page can edit or switch it off).
+- **Carousel**: big ◀ ▶ arrows at the sides move one tile (they fade out at
+  the ends), as well as swiping.
 - **Carousel order**: the app opened most recently first (Tablet Home prefs
   `used_<package>`, so per kid). `BUILT_IN` packages (ours, plus Khan Academy
   Kids) are switched on once when first seen.

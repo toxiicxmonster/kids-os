@@ -66,7 +66,7 @@ public class HomeActivity extends Activity {
     private static final String TAG = "TabletHome";
     private static final String MODE_PROP = "persist.waydroid.tablet_mode";
     static final String PREFS = "apps";
-    private static final String KEY_APPROVED = "approved";
+    static final String KEY_APPROVED = "approved";
     static final String KEY_THEME = "theme";  // last known, so the right one shows at once
     private static final long MODE_POLL_MS = 1500;
 
@@ -230,9 +230,14 @@ public class HomeActivity extends Activity {
         }
         List<String> allowed = new ArrayList<>(approved());
         allowed.add(getPackageName());
-        // Movies & TV and Dance open these to play on the tablet (while the TV is
-        // paused or not set up), even when they aren't in the carousel themselves.
-        allowed.addAll(PlayerCover.PLAYERS);
+        // Not the players (YouTube Kids, Plex): PlayerCover lets them in only
+        // while Dance or Movies & TV has handed one a title.
+        // (One the parent put in the carousel itself stays, of course.)
+        for (String player : PlayerCover.PLAYERS) {
+            if (!approved().contains(player)) {
+                allowed.remove(player);
+            }
+        }
         dpm.setLockTaskPackages(admin, allowed.toArray(new String[0]));
         // Keep only the Home button: no recents, notifications, status bar or power menu.
         dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_HOME);
@@ -491,8 +496,54 @@ public class HomeActivity extends Activity {
 
         root.addView(scroller, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        if (apps.size() > 1) {
+            View left = arrowButton("◀", Gravity.START, scroller, step, apps.size(), -1);
+            View right = arrowButton("▶", Gravity.END, scroller, step, apps.size(), 1);
+            root.addView(left);
+            root.addView(right);
+            Runnable refresh = () -> {
+                int index = Math.round((float) scroller.getScrollX() / step);
+                fadeArrow(left, index > 0);
+                fadeArrow(right, index < apps.size() - 1);
+            };
+            scroller.setOnScrollChangeListener((v, x, y, oldX, oldY) -> refresh.run());
+            scroller.post(refresh);
+        }
         root.addView(themeButton(root));
         return root;
+    }
+
+    /** A big round arrow at one side: one tap moves the carousel one tile that way. */
+    private View arrowButton(String glyph, int side, HorizontalScrollView scroller, int step, int count, int dir) {
+        TextView arrow = new TextView(this);
+        arrow.setText(glyph);
+        arrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 40);
+        arrow.setTextColor(Color.rgb(0x0d, 0x47, 0xa1));
+        arrow.setGravity(Gravity.CENTER);
+        GradientDrawable circle = new GradientDrawable();
+        circle.setShape(GradientDrawable.OVAL);
+        circle.setColor(Color.argb(235, 255, 255, 255));
+        circle.setStroke(dp(5), Color.rgb(0x0d, 0x47, 0xa1));
+        arrow.setBackground(circle);
+        arrow.setElevation(dp(10));
+        arrow.setContentDescription(dir < 0 ? "Back" : "Next");
+        arrow.setOnClickListener(v -> tapFeedback(v, () -> {
+            int index = Math.round((float) scroller.getScrollX() / step) + dir;
+            scroller.smoothScrollTo(Math.max(0, Math.min(count - 1, index)) * step, 0);
+        }));
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(104), dp(104), side | Gravity.CENTER_VERTICAL);
+        lp.leftMargin = lp.rightMargin = dp(20);
+        arrow.setLayoutParams(lp);
+        return arrow;
+    }
+
+    /** An arrow with nowhere to go fades away (and takes no taps). */
+    private static void fadeArrow(View arrow, boolean usable) {
+        if (arrow.isEnabled() != usable) {
+            arrow.setEnabled(usable);
+            arrow.setClickable(usable);
+            arrow.animate().alpha(usable ? 1f : 0f).setDuration(200).start();
+        }
     }
 
     // ---- themes: the kid picks their own background ------------------------------

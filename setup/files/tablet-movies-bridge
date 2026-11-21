@@ -18,7 +18,8 @@ Kid endpoints (anyone on the Waydroid network):
                                 no TV is set up; "local" in /api/movies): picks a show's
                                 episode and returns a stream for Movies & TV's own player
   GET  /api/hls/<session>/...   that stream (HLS from the Plex transcoder, through the bridge);
-                                POST /api/hls-stop/<session> when the player closes
+                                POST /api/hls-stop/<session> when the player closes;
+                                GET /api/hls-gain/<session> its loudness gain (dB, 0 unknown)
   POST /api/dance-local/<id>    the same for a Dance song (the app opens YouTube Kids)
   GET  /api/theme               the logged-in kid's theme; POST /api/theme/<name> sets it
   GET  /api/dance               the Dance app's songs; GET /api/dance-thumb/<id> a picture
@@ -51,6 +52,10 @@ Web portal for the parents' phones (home network only, PIN-protected):
   GET  /api/portal/library?q=   search, POST/DELETE /api/portal/items/<key>
   POST /api/portal/netflix      {"ref": "<netflix.com/title/... link or its number>"}
   GET/POST /api/portal/volume   the kid volume ({"percent": 0-100}), via tablet-volume
+  GET/POST /api/portal/tv-volume  the TV's: LG {"level": 0-100, "mute": bool}, Roku {"step": ±n, "mute": true}
+  GET/POST /api/portal/tv-levels  a TV volume for each kind ({"enabled", "plex", "netflix", "youtube"})
+  GET  /api/portal/tvs          TVs on the network (and the chosen one); POST /api/portal/tv/<serial>
+  POST /api/portal/airplay-pair {} starts (the LG shows a PIN), then {"pin": "1234"}; {"cancel": true}
   GET  /api/portal/kids         the kids; lists, schedule and history routes take ?kid=
   GET/POST /api/portal/schedule allowed hours, daily limit; POST extra, sleep (?kid=)
   GET  /api/portal/history      what the kid played and opened; GET now, POST tv-stop
@@ -70,6 +75,7 @@ import copy
 import datetime
 import grp
 import pwd
+import queue
 import shutil
 import hashlib
 import hmac
@@ -360,7 +366,7 @@ def stream_start(key, size=None, bitrate=None, client=None, show=None):
     sid = uuid.uuid4().hex
     now = time.time()
     for old in [s for s, v in streams.items() if now - v["at"] > 6 * 3600]:
-        streams.pop(old, None)
+        meter_done(streams.pop(old, None))
     streams[sid] = {"key": str(int(key)), "at": now, "size": size, "bitrate": bitrate, "client": client,
                     "show": show}
     return sid
@@ -415,6 +421,8 @@ def stream_get(cfg, sid, rest):
         url = base + rest
     data = fetch(url, headers=headers, timeout=60, raw=True)
     stream["at"] = time.time()
+    if rest.endswith(".ts"):
+        meter_feed(stream, data)
     if rest.endswith(".m3u8"):
         # Keep every link relative to the bridge (and the token off the tablet).
         data = re.sub(rb"https?://[^\s\"]*?/video/:/transcode/universal/", b"", data)
@@ -424,12 +432,129 @@ def stream_get(cfg, sid, rest):
 
 
 def stream_stop(cfg, sid):
-    if streams.pop(sid, None) is not None:
+    stream = streams.pop(sid, None)
+    meter_done(stream)
+    if stream is not None:
         try:
             fetch(f"{cfg['server_url']}/video/:/transcode/universal/stop?session={sid}",
                   headers=plex_headers(cfg, cfg["server_token"]), timeout=10)
         except OSError:
             pass
+
+
+# ---- evening out loudness: each Plex title measured as it streams -------------------
+#
+# Plex titles are much quieter than YouTube (measured 2026-11-20: a Bluey
+# episode -32 LUFS, Despicable Me -18; YouTube Kids plays songs at -14 to
+# -24), and Plex's audioBoost changes nothing. So every stream's segments
+# also go through ffmpeg's EBU R128 meter on their way past; at the end the
+# title's (and its show's) loudness is kept, and Movies & TV's player boosts
+# or softens it toward LOUDNESS_TARGET next time (GET /api/hls-gain/<session>).
+
+LOUDNESS = STATE / "loudness.json"  # Plex key -> {"lufs", "seconds"}
+LOUDNESS_TARGET = -18.0  # LUFS: about where YouTube Kids' songs sit
+LOUDNESS_RANGE = (-10.0, 12.0)  # dB: the most it softens or boosts
+METER_MIN_SECONDS, METER_MAX_SECONDS = 90, 30 * 60
+FFMPEG = "/usr/bin/ffmpeg"
+loudness_lock = threading.Lock()
+
+
+class Meter:
+    """ffmpeg's loudness meter on one stream's audio, fed segment by segment
+    (from a queue, so the player's requests never wait for it)."""
+
+    def __init__(self):
+        self.lufs, self.seconds = None, 0.0
+        self.chunks = queue.Queue(maxsize=32)
+        self.proc = subprocess.Popen([FFMPEG, "-hide_banner", "-nostats", "-loglevel", "info", "-f", "mpegts",
+                                      "-i", "pipe:0", "-vn", "-af", "ebur128", "-f", "null", "-"],
+                                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        threading.Thread(target=self._feed, daemon=True).start()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _feed(self):
+        try:
+            while (chunk := self.chunks.get()) is not None:
+                self.proc.stdin.write(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                self.proc.stdin.close()
+            except OSError:
+                pass
+
+    def _read(self):
+        # Each line: "... t: 12.3   TARGET:-23 LUFS    M: ... S: ...    I: -20.1 LUFS ..."
+        for line in io.TextIOWrapper(self.proc.stderr, errors="replace"):
+            t = re.search(r"(?<![A-Za-z])t:\s*([\d.]+)", line)
+            i = re.search(r"(?<![A-Za-z])I:\s*(-?[\d.]+) LUFS", line)
+            if t and i:
+                self.seconds, self.lufs = float(t[1]), float(i[1])
+
+    def feed(self, data):
+        if self.seconds >= METER_MAX_SECONDS:
+            return False
+        try:
+            self.chunks.put_nowait(data)
+        except queue.Full:
+            pass  # (a skipped segment only shortens the measurement)
+        return True
+
+    def finish(self):
+        self.chunks.put(None)
+        try:
+            self.proc.wait(20)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        return self.lufs, self.seconds
+
+
+def meter_feed(stream, data):
+    if "meter" not in stream:
+        try:
+            stream["meter"] = Meter() if os.path.exists(FFMPEG) else None
+        except OSError as e:
+            print(f"loudness meter: {e!r}", flush=True)
+            stream["meter"] = None
+    meter = stream["meter"]
+    if meter and not meter.feed(data):
+        stream["meter"] = None  # long enough: keep it now
+        threading.Thread(target=meter_keep, args=(stream, meter), daemon=True).start()
+
+
+def meter_done(stream):
+    meter = (stream or {}).pop("meter", None)
+    if meter:
+        threading.Thread(target=meter_keep, args=(stream, meter), daemon=True).start()
+
+
+def meter_keep(stream, meter):
+    lufs, seconds = meter.finish()
+    if lufs is None or seconds < METER_MIN_SECONDS or lufs < -70:
+        return
+    with loudness_lock:
+        known = read_side(LOUDNESS)
+        for key in filter(None, (stream["key"], stream.get("show"))):
+            if key == stream["key"] and (known.get(key) or {}).get("seconds", 0) > seconds:
+                continue  # a longer measurement of this title already
+            known[str(key)] = {"lufs": round(lufs, 1), "seconds": round(seconds)}
+        write_side(LOUDNESS, known)
+    print(f"loudness: {stream['key']} {lufs:.1f} LUFS over {seconds:.0f}s", flush=True)
+
+
+def loudness_gain(sid):
+    """dB for the player to even this stream out (0 when it isn't known yet)."""
+    stream = streams.get(sid)
+    if not stream:
+        return 0.0
+    with loudness_lock:
+        known = read_side(LOUDNESS)
+    found = known.get(stream["key"]) or known.get(str(stream.get("show") or ""))
+    if not found:
+        return 0.0
+    low, high = LOUDNESS_RANGE
+    return round(max(low, min(high, LOUDNESS_TARGET - found["lufs"])), 1)
 
 
 def tablet_screen():
@@ -868,6 +993,9 @@ def play(cfg, key, dance=None):
     if kid and not kid_allowed(cfg.root, kid)[0]:
         return {"result": "sleeping", "message": "The tablet is sleeping."}
     generation += 1
+    if paused_until(cfg) is None:
+        item = {} if dance else next((m for m in cfg.get("movies", []) if m["key"] == key), {})
+        tv_level_before(cfg, "dance" if dance else item.get("kind") or "movie")
     result = start_dance(cfg, dance) if dance else start(cfg, key)
     if result["result"] == "playing":
         last_started = time.time()
@@ -1142,12 +1270,125 @@ def tv_stop():
     if not tv or tv["power"] != "PowerOn":
         return {"ok": False, "message": "The TV is off."}
     if tv.get("kind") == "lg":
+        try:
+            with lg_session(tv) as s:
+                lg_learn_level(s)  # before it goes: the volume it was watched at
+        except OSError:
+            pass
         airplay_stop()
         with lg_session(tv) as s:
             s.button("HOME")
     else:
         roku_key(tv["ip"], "Home")
     return {"ok": True}
+
+
+# ---- the TV's volume (web page), and a volume for each kind of video -------------------
+#
+# Plex is far quieter than YouTube (see "evening out loudness"), and on the TV
+# only the TV's own volume can make up for it. So on an LG the bridge keeps a
+# volume for each kind (Plex, Netflix, YouTube): whatever the TV was at while
+# that kind played (turned with the remote or on the web page) is kept, and
+# the next pick of that kind starts at it. A Roku has only volume buttons
+# (no level to read or set), so there it's just − / + / mute.
+
+TV_LEVELS = STATE / "tv-levels.json"  # {"enabled": bool, "plex": n, "netflix": n, "youtube": n}
+LEVEL_KINDS = ("plex", "netflix", "youtube")
+PICK_LEVEL_KIND = {"movie": "plex", "show": "plex", "netflix": "netflix", "dance": "youtube"}
+
+
+def tv_levels():
+    with side_lock:
+        levels = read_side(TV_LEVELS)
+    levels.setdefault("enabled", True)
+    return levels
+
+
+def set_tv_levels(change):
+    with side_lock:
+        levels = read_side(TV_LEVELS)
+        levels.setdefault("enabled", True)
+        if "enabled" in change:
+            levels["enabled"] = bool(change["enabled"])
+        for kind in LEVEL_KINDS:
+            if kind in change:
+                if change[kind] is None:
+                    levels.pop(kind, None)
+                elif isinstance(change[kind], int) and 0 <= change[kind] <= 100:
+                    levels[kind] = change[kind]
+                else:
+                    raise ValueError("a volume is 0 to 100")
+        write_side(TV_LEVELS, levels)
+    return levels
+
+
+def lg_learn_level(s, levels=None):
+    """The LG's volume now is the one for what it's playing now (kept)."""
+    try:
+        kind = LG_APP_KINDS.get(s.foreground_app())
+        level = s.volume()[0]
+    except LGError:
+        return None
+    if kind and isinstance(level, int):
+        with side_lock:
+            known = read_side(TV_LEVELS)
+            if known.get("enabled", True) and known.get(kind) != level:
+                known[kind] = level
+                write_side(TV_LEVELS, known)
+                print(f"TV volume: {level} for {kind}", flush=True)
+    return kind
+
+
+def tv_level_before(cfg, pick_kind):
+    """An LG, just before a pick starts: keep the volume of what's on now,
+    then set the one this kind of video had last time (if it's known)."""
+    kind = PICK_LEVEL_KIND.get(pick_kind)
+    tv = cfg.get("tv") or {}
+    if not kind or tv.get("kind") != "lg" or not tv_levels()["enabled"]:
+        return
+    try:
+        with lg_session(tv) as s:
+            lg_learn_level(s)
+            want = tv_levels().get(kind)
+            level = s.volume()[0]
+            if isinstance(want, int) and want != level:
+                s.set_volume(want)
+                print(f"TV volume: {level} -> {want} for {kind}", flush=True)
+    except OSError as e:  # never in the way of the pick
+        print(f"TV volume: {e!r}", flush=True)
+
+
+def tv_volume(change=None):
+    """The TV's volume for the web page, changed first if asked: an LG takes
+    {"level": 0-100} and {"mute": bool}; a Roku {"step": -5..5} and {"mute": true}
+    (its mute button, which toggles)."""
+    with lock:
+        cfg = load()
+    tv = find_tv(cfg) if cfg.get("tv") else None
+    if not tv:
+        return {"ok": False, "message": "No TV is set up."}
+    kind = tv.get("kind") or "roku"
+    if tv["power"] != "PowerOn":
+        return {"ok": False, "kind": kind, "message": "The TV is off."}
+    change = change or {}
+    if kind == "lg":
+        with lg_session(tv) as s:
+            if "level" in change:
+                level = change["level"]
+                if not isinstance(level, int) or not 0 <= level <= 100:
+                    raise ValueError("volume must be 0 to 100")
+                s.set_volume(level)
+            if "mute" in change:
+                s.set_mute(bool(change["mute"]))
+            level, muted, output = s.volume()
+            playing = lg_learn_level(s) if "level" in change else LG_APP_KINDS.get(s.foreground_app())
+        return {"ok": True, "kind": "lg", "level": level, "muted": muted, "output": output, "playing": playing}
+    if change.get("mute"):
+        roku_key(tv["ip"], "VolumeMute")
+    step = int(change.get("step") or 0)
+    for _ in range(min(abs(step), 5)):
+        roku_key(tv["ip"], "VolumeUp" if step > 0 else "VolumeDown")
+    return {"ok": True, "kind": "roku"}
 
 
 def system_status():
@@ -1437,7 +1678,7 @@ def read_side(path):
     try:
         return json.loads(path.read_text())
     except (FileNotFoundError, ValueError):
-        return {} if path == USAGE else []
+        return {} if path in (USAGE, LOUDNESS, TV_LEVELS) else []
 
 
 def write_side(path, data):
@@ -1453,8 +1694,26 @@ def minutes_used(kid, day=None):
         return read_side(USAGE).get(kid, {}).get(day, 0)
 
 
+SCREEN_DARK = STATE / "screen-dark"  # "<idle since> <dark since>" while the screen sleeps
+
+
+def screen_dark():
+    """(idle since, dark since) while tablet-parent-switch has the screen asleep
+    (it refreshes the file while it is; an old one is left over), else None."""
+    try:
+        if time.time() - SCREEN_DARK.stat().st_mtime > 90:
+            return None
+        idle, dark = (float(v) for v in SCREEN_DARK.read_text().split()[:2])
+        return idle, dark
+    except (OSError, ValueError):
+        return None
+
+
 def count_usage():
-    """Once a minute: a minute of tablet time for the kid on the screen."""
+    """Once a minute: a minute of tablet time for the kid on the screen, but
+    not while the screen sleeps (no touch for a while: the idle stretch before
+    it went dark is taken back too) or the sleeping moon is up."""
+    taken_back = None  # the sleep whose idle minutes are already off
     while True:
         time.sleep(60)
         try:
@@ -1462,6 +1721,20 @@ def count_usage():
             if not kid:
                 continue
             today = datetime.date.today()
+            dark = screen_dark()
+            if dark:
+                if dark[1] != taken_back:
+                    taken_back = dark[1]
+                    idle = max(0, round((dark[1] - dark[0]) / 60))
+                    with side_lock:
+                        usage = read_side(USAGE)
+                        days = usage.setdefault(kid, {})
+                        days[today.isoformat()] = max(0, days.get(today.isoformat(), 0) - idle)
+                        write_side(USAGE, usage)
+                continue
+            with lock:
+                if not kid_allowed(load(), kid)[0]:
+                    continue  # the sleeping moon: not tablet time
             with side_lock:
                 usage = read_side(USAGE)
                 days = usage.setdefault(kid, {})
@@ -1946,7 +2219,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                           ("POST", "theme"), ("GET", "dance"), ("GET", "dance-thumb"), ("POST", "dance-play"),
                           ("GET", "allowed"), ("POST", "activity"), ("GET", "coloring"),
                           ("GET", "coloring-page"), ("POST", "play-local"), ("POST", "dance-local"),
-                          ("GET", "hls"), ("POST", "hls-stop"), ("POST", "hls-next"),
+                          ("GET", "hls"), ("POST", "hls-stop"), ("POST", "hls-next"), ("GET", "hls-gain"),
                           ("POST", "android-fix"),
                           ("GET", "android-fix")}
             if route not in kid_routes and not (client.is_loopback or parent_on_desktop()):
@@ -1974,19 +2247,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     play_lock.release()
             if route == ("POST", "tv"):
                 # An LG waits up to a minute for Accept on the TV: not under the config lock.
-                serial = parts[1] if len(parts) > 1 else ""
-                tv = next((t for t in discover_tvs() if t["serial"] == serial), None)
-                if not tv:
-                    raise KeyError(serial)
-                chosen = {k: tv.get(k) for k in ("serial", "ip", "name", "location")}
-                if tv.get("kind") == "lg":
-                    chosen.update(kind="lg", client_key=lg_pair(tv["ip"]))
-                with lock:
-                    cfg = load()
-                    keep_airplay(cfg, chosen)
-                    cfg["tv"] = chosen
-                    save(cfg)
-                return self.reply(200, {"tv": {k: v for k, v in chosen.items() if k not in TV_SECRETS}})
+                return self.reply(200, {"tv": choose_tv(parts[1] if len(parts) > 1 else "")})
             if route == ("POST", "android-fix"):
                 q = {k: v[0] for k, v in query.items()}
                 return self.reply(200, {"id": android_fix(q.get("level"), q.get("app", ""), q.get("why", ""))})
@@ -2001,6 +2262,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     stream_stop(cfg, sid)
                     return self.reply(200, {"ok": True})
                 return self.reply(200, *stream_get(cfg, sid, "/".join(parts[2:])))
+            if route == ("GET", "hls-gain"):
+                return self.reply(200, {"gain_db": loudness_gain(parts[1] if len(parts) > 1 else "")})
             if route == ("POST", "hls-next"):
                 # The next episode (Plex round trips, so outside the config lock).
                 with lock:
@@ -2213,6 +2476,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 save(cfg)
             (COLORING / f"{arg}.png").unlink(missing_ok=True)
             return self.reply(200, {"count": len(cfg["coloring"])})
+        if authed and route == ("GET", "tv-volume"):
+            return self.reply(200, tv_volume())
+        if authed and route == ("POST", "tv-volume"):
+            return self.reply(200, tv_volume(self.body_json()))
+        if authed and route == ("GET", "tv-levels"):
+            return self.reply(200, tv_levels())
+        if authed and route == ("POST", "tv-levels"):
+            return self.reply(200, set_tv_levels(self.body_json()))
+        if authed and route == ("GET", "setup-tv"):
+            with lock:
+                chosen = load().get("tv")
+            return self.reply(200, {"tv": public_tv(chosen) if chosen else None})
+        if authed and route == ("GET", "tvs"):
+            with lock:
+                chosen = load().get("tv")
+            return self.reply(200, {"tvs": discover_tvs(), "chosen": public_tv(chosen) if chosen else None})
+        if authed and route == ("POST", "tv"):
+            return self.reply(200, {"tv": choose_tv(arg or "")})
+        if authed and route == ("POST", "airplay-pair"):
+            body = self.body_json()
+            if body.get("pin"):
+                return self.reply(200, airplay_pair_finish(body["pin"]))
+            if body.get("cancel"):
+                airplay_pair_cancel()
+                return self.reply(200, {"result": "cancelled"})
+            return self.reply(200, airplay_pair_start())
         if authed and route == ("GET", "volume"):
             return self.reply(200, {"percent": kid_volume()})
         if authed and route == ("POST", "volume"):
@@ -2319,6 +2608,8 @@ LG_NETFLIX_APP = "netflix"
 LG_YOUTUBE_APP = "youtube.leanback.v4"
 LG_APP_NAMES = {LG_PLEX_APP: "Plex", LG_NETFLIX_APP: "Netflix", LG_YOUTUBE_APP: "YouTube",
                 "com.webos.app.home": "home screen", "com.webos.app.livetv": "Live TV"}
+# What's on the LG, as a kind of video for its volume (AirPlay is our Plex stream).
+LG_APP_KINDS = {"airplay": "plex", LG_PLEX_APP: "plex", LG_NETFLIX_APP: "netflix", LG_YOUTUBE_APP: "youtube"}
 LG_PLAY_STATES = {"playing": "play", "paused": "pause", "loaded": "buffer", "buffering": "buffer"}
 LG_PAIRING_WAIT = 60  # seconds to press Accept on the TV
 LG_PERMISSIONS = [
@@ -2543,6 +2834,20 @@ class LGTV:
                 return state
         return None
 
+    def volume(self):
+        """(level 0-100, muted, sound output e.g. "tv_speaker") of the TV."""
+        body = self.request("ssap://audio/getVolume")
+        status = body.get("volumeStatus") or body  # (newer webOS nests it)
+        level = status.get("volume")
+        muted = status.get("muteStatus", status.get("muted", False))
+        return (int(level) if isinstance(level, (int, float)) else None), bool(muted), status.get("soundOutput")
+
+    def set_volume(self, level):
+        self.request("ssap://audio/setVolume", {"volume": int(level)})
+
+    def set_mute(self, mute):
+        self.request("ssap://audio/setMute", {"mute": bool(mute)})
+
     def apps(self):
         return {a.get("id"): a.get("title") for a in
                 self.request("ssap://com.webos.applicationManager/listApps").get("apps", [])}
@@ -2757,6 +3062,97 @@ def keep_airplay(cfg, chosen):
         chosen["airplay"] = old["airplay"]
 
 
+def public_tv(tv):
+    return {k: v for k, v in tv.items() if k not in TV_SECRETS} | {"airplay_paired": bool(tv.get("airplay"))}
+
+
+def choose_tv(serial):
+    """The TV picks go to (Movies & TV setup, or the web page's Settings). An
+    LG shows its pairing prompt: this waits up to a minute for Accept."""
+    tv = next((t for t in discover_tvs() if t["serial"] == serial), None)
+    if not tv:
+        raise KeyError(serial)
+    chosen = {k: tv.get(k) for k in ("serial", "ip", "name", "location")}
+    if tv.get("kind") == "lg":
+        chosen.update(kind="lg", client_key=lg_pair(tv["ip"]))
+    with lock:
+        cfg = load()
+        keep_airplay(cfg, chosen)
+        cfg["tv"] = chosen
+        save(cfg)
+    print(f"TV chosen: {chosen.get('location') or chosen.get('name')} ({chosen.get('kind') or 'roku'})", flush=True)
+    return public_tv(chosen)
+
+
+# AirPlay pairing from the web page, in two steps: start (the TV shows a PIN),
+# then the PIN (typed on the page). The helper waits for it on its stdin.
+airplay_pairing = {}  # "proc", "err" (its stderr so far), "at"
+AIRPLAY_PAIR_WAIT = 180  # seconds to type the PIN
+
+
+def airplay_pair_start():
+    with lock:
+        tv = load().get("tv") or {}
+    if tv.get("kind") != "lg":
+        raise ValueError("AirPlay is for an LG TV: choose one first")
+    airplay_pair_cancel()
+    proc = subprocess.Popen([AIRPLAY, "pair", tv["ip"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    err = bytearray()
+
+    def read_err():
+        while chunk := os.read(proc.stderr.fileno(), 256):
+            err.extend(chunk)
+    threading.Thread(target=read_err, daemon=True).start()
+    airplay_pairing.update(proc=proc, err=err, at=time.time())
+    end = time.time() + 40  # finding the TV, then its PIN on screen
+    while time.time() < end and proc.poll() is None:
+        if b"PIN" in err:
+            threading.Timer(AIRPLAY_PAIR_WAIT, airplay_pair_cancel, args=(proc,)).start()
+            return {"result": "pin", "message": "Type the PIN the TV shows."}
+        time.sleep(0.3)
+    airplay_pair_cancel()
+    tail = err.decode(errors="replace").strip().splitlines()[-1:] or ["no answer"]
+    return {"result": "error", "message": f"The TV didn't start pairing ({tail[0]})."}
+
+
+def airplay_pair_finish(pin):
+    proc = airplay_pairing.get("proc")
+    if not proc or proc.poll() is not None:
+        raise ValueError("Start the pairing again (the PIN on the TV is only good for a few minutes)")
+    pin = re.sub(r"\D", "", str(pin))
+    if not 4 <= len(pin) <= 8:
+        raise ValueError("The PIN is the 4 numbers on the TV")
+    try:
+        proc.stdin.write(pin.encode() + b"\n")
+        proc.stdin.close()
+        proc.wait(60)
+        out = proc.stdout.read()  # (stderr is read by its own thread)
+    except (OSError, subprocess.TimeoutExpired):
+        airplay_pair_cancel()
+        return {"result": "error", "message": "The TV didn't answer."}
+    airplay_pairing.clear()
+    credentials = out.decode(errors="replace").strip()
+    if proc.returncode or not credentials:
+        return {"result": "error", "message": "That PIN didn't work. Try again."}
+    with lock:
+        cfg = load()
+        if (cfg.get("tv") or {}).get("kind") != "lg":
+            return {"result": "error", "message": "The TV changed while pairing."}
+        cfg["tv"]["airplay"] = credentials.splitlines()[-1]
+        save(cfg)
+    print("AirPlay paired from the web page", flush=True)
+    return {"result": "paired", "message": "Paired! Plex titles play on the TV over AirPlay."}
+
+
+def airplay_pair_cancel(only=None):
+    proc = airplay_pairing.get("proc")
+    if proc and (only is None or proc is only):
+        if proc.poll() is None:
+            proc.kill()
+        airplay_pairing.clear()
+
+
 airplay_lock = threading.Lock()
 airplay_now = {}  # the playing helper: "proc", "sid", "state", "position", "duration", "title"
 
@@ -2842,7 +3238,7 @@ def airplay_start(cfg, item, key, tv, episode=None):
     airplay_stop()  # one thing on the TV at a time
     show = key if item.get("kind") == "show" else None
     play_key = episode or (pick_episode(cfg, key) if show else key)
-    sid = stream_start(play_key, size=TV_STREAM_SIZE, bitrate=TV_STREAM_BITRATE, client=tv["ip"])
+    sid = stream_start(play_key, size=TV_STREAM_SIZE, bitrate=TV_STREAM_BITRATE, client=tv["ip"], show=show)
     url = f"http://{local_ip_toward(tv['ip'])}:{LISTEN[1]}/api/hls/{sid}/start.m3u8"
     try:
         proc = subprocess.Popen([AIRPLAY, "play", tv["ip"], url], stdout=subprocess.PIPE, text=True,

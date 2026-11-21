@@ -3,8 +3,10 @@
 # TV (the Movies Android app itself is built and installed by stage 35).
 set -euo pipefail
 
-# Pillow: Netflix posters are made from Netflix's wide title art.
+# Pillow: Netflix posters are made from Netflix's wide title art. ffmpeg: the
+# bridge measures each Plex title's loudness as it streams (to even it out).
 DEBIAN_FRONTEND=noninteractive apt-get -y install python3-pil python3-venv >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends ffmpeg >/dev/null
 
 # Dance app: yt-dlp lists the Danny Go! channel's songs (titles, lengths; no
 # downloads). Its own venv, kept current weekly: YouTube changes often.

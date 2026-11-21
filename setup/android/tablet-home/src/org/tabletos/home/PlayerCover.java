@@ -1,6 +1,8 @@
 package org.tabletos.home;
 
+import android.app.admin.DevicePolicyManager;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
@@ -23,6 +25,9 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -45,6 +50,13 @@ import java.util.Set;
  * bounce. When the song is over (it has played about its length and then the
  * sound stops, or a hard limit so YouTube Kids' autoplay can't run on), the
  * shield goes and the app that asked (--es back, i.e. Dance) comes back.
+ *
+ * The players may only run in the kiosk's lock task while a hand-off is on:
+ * this receiver adds them to the allowlist (before the app that asked opens
+ * one: it waits for this ordered broadcast) and hide() takes them off again,
+ * which makes Android close whatever is left of them. Otherwise a paused
+ * YouTube Kids could come back on its own later (e.g. when Dance finished),
+ * without the shield or the home button.
  *
  *   am broadcast -n org.tabletos.home/.PlayerCover --es package com.plexapp.android
  *   am broadcast -n org.tabletos.home/.PlayerCover --es package com.google.android.apps.youtube.kids \
@@ -87,6 +99,7 @@ public class PlayerCover extends BroadcastReceiver {
             return;
         }
         Context app = context.getApplicationContext();
+        allowPlayers(app, true);  // before the player opens (the sender waits for us)
         boolean shieldIt = YOUTUBE_KIDS.equals(pkg);
         long length = Math.max(0, intent.getIntExtra("seconds", 0)) * 1000L;
         String backTo = intent.getStringExtra("back");
@@ -102,7 +115,7 @@ public class PlayerCover extends BroadcastReceiver {
         if (!Settings.canDrawOverlays(context)) {
             return;
         }
-        hide(context);
+        clear(context);
         FrameLayout root = new FrameLayout(context);
         ImageView picture = new ImageView(context);
         picture.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -253,8 +266,44 @@ public class PlayerCover extends BroadcastReceiver {
         ui.postDelayed(() -> hide(context), 700);
     }
 
-    /** Tablet Home is back on screen (or the song is over): cover and home button both go. */
+    /**
+     * Tablet Home is back on screen (or the song is over): cover and home
+     * button both go, and so do the players (off the lock-task allowlist).
+     */
     static void hide(Context context) {
+        clear(context);
+        allowPlayers(context, false);
+    }
+
+    /** Lets the players run in lock task (on), or takes them off the allowlist (off). */
+    static void allowPlayers(Context context, boolean on) {
+        DevicePolicyManager dpm = context.getSystemService(DevicePolicyManager.class);
+        ComponentName admin = new ComponentName(context, AdminReceiver.class);
+        if (dpm == null || !dpm.isDeviceOwnerApp(context.getPackageName())) {
+            return;
+        }
+        try {
+            List<String> allowed = new ArrayList<>(Arrays.asList(dpm.getLockTaskPackages(admin)));
+            // (A player the parent put in the carousel stays allowed.)
+            Set<String> approved = context.getSharedPreferences(HomeActivity.PREFS, Context.MODE_PRIVATE)
+                    .getStringSet(HomeActivity.KEY_APPROVED, Set.of());
+            boolean changed = false;
+            for (String player : PLAYERS) {
+                if (on && !allowed.contains(player)) {
+                    changed |= allowed.add(player);
+                } else if (!on && !approved.contains(player)) {
+                    changed |= allowed.remove(player);
+                }
+            }
+            if (changed) {
+                dpm.setLockTaskPackages(admin, allowed.toArray(new String[0]));
+            }
+        } catch (RuntimeException e) {
+            android.util.Log.w("PlayerCover", "lock task allowlist", e);
+        }
+    }
+
+    private static void clear(Context context) {
         shielding = false;
         if (cover != null) {
             remove(context, cover);

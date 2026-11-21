@@ -216,6 +216,31 @@
         <button id="stopBtn" class="big">⏹ Stop it (TV home screen)</button>
       </section>
 
+      <section class="card" id="tvVolCard">
+        <h2>📺 TV volume</h2>
+        <div id="tvVolLg" hidden>
+          <div class="vol">🔈<input id="tvVol" type="range" min="0" max="100" step="1" value="10" aria-label="TV volume">🔊<b id="tvVolText">…</b></div>
+          <div class="buttons"><button id="tvMuteBtn">🔇 Mute</button></div>
+        </div>
+        <div id="tvVolRoku" class="chips" hidden>
+          <button id="tvDownBtn">🔉 Quieter</button>
+          <button id="tvUpBtn">🔊 Louder</button>
+          <button id="tvRokuMuteBtn">🔇 Mute</button>
+        </div>
+        <p class="msg" id="tvVolMsg">Checking…</p>
+        <details id="tvLevels" hidden>
+          <summary>A volume for each kind of video</summary>
+          <div class="field">
+            <label for="levelsOn">Even out Plex, Netflix and YouTube</label>
+            <div class="switch"><input type="checkbox" id="levelsOn"><span></span></div>
+          </div>
+          <div id="levelRows"></div>
+          <p class="msg">Plex shows are often much quieter than YouTube songs. With this on, the TV keeps the volume
+            each kind was last watched at (set here or with the remote), and goes back to it when the kids pick
+            that kind again.</p>
+        </details>
+      </section>
+
       <section class="card">
         <h2>🔊 Tablet volume</h2>
         <div class="vol">🔈<input id="vol" type="range" min="0" max="100" step="5" value="100" disabled aria-label="Tablet volume">🔊<b id="volText">…</b></div>
@@ -347,6 +372,24 @@
       </section>
 
       <section class="card">
+        <h2>📺 TV</h2>
+        <div id="tvChosen" class="state info"><span class="icon">📺</span><div>Checking…</div></div>
+        <div class="buttons"><button id="findTvsBtn">🔍 Find TVs</button></div>
+        <div id="tvList"></div>
+        <div id="airplayBox" hidden>
+          <h3>AirPlay (Plex on an LG)</h3>
+          <p class="msg" id="airplayMsg" style="margin:0 0 8px"></p>
+          <div class="buttons" id="airplayStartRow"><button id="airplayBtn">📡 Pair AirPlay</button></div>
+          <div class="search" id="airplayPinRow" hidden>
+            <input id="airplayPin" inputmode="numeric" maxlength="8" placeholder="PIN on the TV" aria-label="AirPlay PIN">
+            <button class="primary" id="airplayPinBtn">Pair</button>
+          </div>
+        </div>
+        <p class="msg">The TV must be on and on the home Wi-Fi. Choosing an LG shows a prompt on the TV: press
+          Accept there within a minute.</p>
+      </section>
+
+      <section class="card">
         <h2>🩺 How it's doing</h2>
         <dl class="facts" id="system"><dt>Checking…</dt><dd></dd></dl>
       </section>
@@ -456,7 +499,7 @@ function go(name) {
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
   window.scrollTo(0, 0);
   if (name === "activity") { loadWeek().catch(() => {}); loadHistory().catch(() => {}); }
-  if (name === "settings") { loadSchedule().catch(() => {}); loadSystem().catch(() => {}); }
+  if (name === "settings") { loadSchedule().catch(() => {}); loadSystem().catch(() => {}); loadTvSetup().catch(() => {}); }
   if (name === "lists") showTab(currentTab);
 }
 document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => { e.preventDefault(); go(b.dataset.go); });
@@ -487,7 +530,7 @@ async function refresh() {
     loadKids().then(() => { loadSchedule().catch(() => {}); go(location.hash.slice(1)); }).catch(() => go("home"));
   }
   loadNow().catch(() => {});
-  if (!$("view-home").hidden) loadSchedule().catch(() => {});
+  if (!$("view-home").hidden) { loadSchedule().catch(() => {}); if (started && !tvVolBusy) loadTvVolume(); }
   $("tvline").textContent = s.tv ? "📺 TV: " + s.tv : "The kids' tablet";
   if (s.paused) state($("pauseState"), "off", "⏸", s.pause_text, "Nothing starts on the TV.");
   else state($("pauseState"), "on", "▶️", "Movie time is on", "The kids can start shows on the TV.");
@@ -585,7 +628,7 @@ async function loadNow() {
   const r = await api("GET", "now");
   const last = r.last ? "Last pick: " + r.last.title + (r.last.kid_name ? " (" + r.last.kid_name + ")" : "") + ", " + ago(r.last.at) : "";
   let on = false;
-  if (!r.tv) state($("nowState"), "info", "📺", "No TV set up yet", last || "Choose one in Movies & TV setup on the tablet.");
+  if (!r.tv) state($("nowState"), "info", "📺", "No TV set up yet", last || "Choose one in Settings.");
   else if (r.tv.power !== "PowerOn") state($("nowState"), "info", "💤", r.tv.name + " is off", last);
   else {
     on = true;
@@ -620,6 +663,117 @@ $("vol").addEventListener("change", async () => {
   try { showVolume((await api("POST", "volume", {percent: Number($("vol").value)})).percent); toast("Volume set 🔊"); }
   catch (e) { oops(e); $("vol").disabled = false; }
 });
+
+// ---- TV volume ---------------------------------------------------------------------------------
+const KIND_NAMES = {plex: "Plex", netflix: "Netflix", youtube: "YouTube"};
+let tvVolBusy = false;
+function showTvVolume(r) {
+  const lg = r.ok && r.kind === "lg", roku = r.ok && r.kind === "roku";
+  $("tvVolLg").hidden = !lg; $("tvVolRoku").hidden = !roku; $("tvLevels").hidden = !lg;
+  if (lg) {
+    if (!tvVolBusy && Number.isInteger(r.level)) $("tvVol").value = r.level;
+    $("tvVolText").textContent = r.muted ? "🔇" : (Number.isInteger(r.level) ? r.level : "–");
+    $("tvMuteBtn").textContent = r.muted ? "🔊 Unmute" : "🔇 Mute";
+    $("tvMuteBtn").dataset.muted = r.muted ? "1" : "";
+    const out = r.output && r.output !== "tv_speaker" ? " The sound goes to " + r.output.replace(/_/g, " ") + ", which may keep its own volume." : "";
+    $("tvVolMsg").textContent = (r.playing ? "Now: " + KIND_NAMES[r.playing] + ". " : "") + out;
+  } else if (roku) $("tvVolMsg").textContent = "A Roku only has volume buttons (it can't say how loud it is).";
+  else $("tvVolMsg").textContent = r.message || "The TV isn't answering.";
+}
+async function loadTvVolume() {
+  try { showTvVolume(await api("GET", "tv-volume")); } catch (e) { if (e.message !== "locked") showTvVolume({ok: false, message: e.message}); }
+  if (!$("tvLevels").hidden) loadLevels().catch(() => {});
+}
+async function setTvVolume(change) {
+  tvVolBusy = true;
+  try { showTvVolume(await api("POST", "tv-volume", change)); if (!$("tvLevels").hidden) loadLevels().catch(() => {}); }
+  catch (e) { oops(e); } finally { tvVolBusy = false; }
+}
+$("tvVol").addEventListener("input", () => { tvVolBusy = true; $("tvVolText").textContent = $("tvVol").value; });
+$("tvVol").addEventListener("change", () => setTvVolume({level: Number($("tvVol").value)}));
+$("tvMuteBtn").onclick = () => busy($("tvMuteBtn"), () => setTvVolume({mute: !$("tvMuteBtn").dataset.muted}));
+$("tvDownBtn").onclick = () => busy($("tvDownBtn"), () => setTvVolume({step: -2}));
+$("tvUpBtn").onclick = () => busy($("tvUpBtn"), () => setTvVolume({step: 2}));
+$("tvRokuMuteBtn").onclick = () => busy($("tvRokuMuteBtn"), () => setTvVolume({mute: true}));
+
+async function loadLevels() {
+  const r = await api("GET", "tv-levels");
+  $("levelsOn").checked = r.enabled;
+  $("levelRows").replaceChildren(...Object.entries(KIND_NAMES).map(([kind, name]) => {
+    const row = el("div", "field");
+    row.append(el("label", "", name));
+    const controls = el("div", "controls");
+    const input = el("input"); input.type = "number"; input.min = 0; input.max = 100; input.style.width = "90px";
+    input.placeholder = "not yet"; input.value = Number.isInteger(r[kind]) ? r[kind] : "";
+    input.disabled = !r.enabled; input.setAttribute("aria-label", name + " TV volume");
+    input.onchange = async () => {
+      const v = input.value === "" ? null : Math.max(0, Math.min(100, Math.round(Number(input.value))));
+      try { await api("POST", "tv-levels", {[kind]: v}); toast(name + ": " + (v === null ? "not set" : "volume " + v) + " ✓"); }
+      catch (e) { oops(e); }
+    };
+    controls.append(input);
+    row.append(controls);
+    return row;
+  }));
+}
+$("levelsOn").addEventListener("change", async () => {
+  try { await api("POST", "tv-levels", {enabled: $("levelsOn").checked}); await loadLevels(); toast($("levelsOn").checked ? "Evening out the volume ✓" : "Off"); }
+  catch (e) { oops(e); }
+});
+
+// ---- choosing the TV (Settings) -----------------------------------------------------------------
+function showChosenTv(tv) {
+  if (!tv) state($("tvChosen"), "info", "📺", "No TV yet", "Find TVs below and choose one.");
+  else state($("tvChosen"), "on", "📺", tv.location || tv.name || "TV",
+             (tv.kind === "lg" ? "LG" : "Roku") + (tv.kind === "lg" ? (tv.airplay_paired ? " · AirPlay paired" : " · AirPlay not paired") : "") + " · " + tv.ip);
+  $("airplayBox").hidden = !tv || tv.kind !== "lg";
+  if (tv && tv.kind === "lg") $("airplayMsg").textContent = tv.airplay_paired
+    ? "Paired: Plex titles play on this TV over AirPlay. Pair again if the TV was reset."
+    : "Plex plays on an LG over AirPlay. Pair once: the TV shows a PIN to type here.";
+}
+async function loadTvSetup() {
+  const r = await api("GET", "setup-tv");
+  showChosenTv(r.tv);
+}
+$("findTvsBtn").onclick = () => busy($("findTvsBtn"), async () => {
+  $("tvList").replaceChildren(el("p", "msg", "Looking on the home network…"));
+  const r = await api("GET", "tvs");
+  showChosenTv(r.chosen);
+  if (!r.tvs.length) { $("tvList").replaceChildren(el("p", "msg", "No TVs found. Is the TV on, and on the same Wi-Fi?")); return; }
+  $("tvList").replaceChildren(...r.tvs.map((tv) => {
+    const chosen = r.chosen && r.chosen.serial === tv.serial;
+    const b = el("button", chosen ? "added" : "primary", chosen ? "✓ Chosen" : "Use this");
+    b.onclick = () => busy(b, async () => {
+      if (tv.kind === "lg") toast("Press Accept on the TV 📺");
+      const c = await api("POST", "tv/" + encodeURIComponent(tv.serial));
+      showChosenTv(c.tv);
+      toast("TV chosen ✓");
+      $("findTvsBtn").click();
+      refresh().catch(() => {}); loadTvVolume();
+    });
+    const off = tv.power && tv.power !== "PowerOn" ? " · off" : "";
+    return listRow(null, false, (tv.location || tv.name) + (tv.location && tv.name ? " (" + tv.name + ")" : ""),
+                   (tv.kind === "lg" ? "LG" : "Roku") + " · " + tv.ip + off, b);
+  }));
+});
+$("airplayBtn").onclick = () => busy($("airplayBtn"), async () => {
+  $("airplayMsg").textContent = "Asking the TV… (a PIN appears on it in a few seconds)";
+  const r = await api("POST", "airplay-pair", {});
+  $("airplayMsg").textContent = r.message;
+  const ok = r.result === "pin";
+  $("airplayPinRow").hidden = !ok; $("airplayStartRow").hidden = ok;
+  if (ok) $("airplayPin").focus();
+});
+$("airplayPinBtn").onclick = () => busy($("airplayPinBtn"), async () => {
+  let r;
+  try { r = await api("POST", "airplay-pair", {pin: $("airplayPin").value}); }
+  finally { $("airplayPin").value = ""; }
+  $("airplayPinRow").hidden = true; $("airplayStartRow").hidden = false;
+  toast(r.message, r.result !== "paired");
+  await loadTvSetup();
+  if (r.result !== "paired") $("airplayMsg").textContent = r.message;
+});
+$("airplayPin").addEventListener("keydown", (e) => { if (e.key === "Enter") $("airplayPinBtn").click(); });
 
 // ---- lists: one row ------------------------------------------------------------------------------
 function listRow(imgSrc, wide, title, sub, button) {

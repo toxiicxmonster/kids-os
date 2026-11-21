@@ -8,6 +8,7 @@ import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
+import android.media.audiofx.LoudnessEnhancer;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -84,6 +85,7 @@ public class PlayerActivity extends Activity {
         final HandlerThread thread = new HandlerThread("player");
         final Handler handler;
         MediaPlayer mp;           // its thread only
+        LoudnessEnhancer louder;  // its thread only: the title's boost, if it's a quiet one
         boolean prepared;         // its thread only
         volatile long busySince;  // when the MediaPlayer call now running began; 0 when none is
 
@@ -294,6 +296,16 @@ public class PlayerActivity extends Activity {
                 });
             }
         });
+        // The title's loudness gain: asked off the player's thread (the watchdog
+        // times every call there), applied whenever it comes (under the cover).
+        new Thread(() -> {
+            double gain = gainFor(uri);
+            p.run(() -> {
+                if (p.mp != null) {  // (null once closed)
+                    evenOut(p, gain);
+                }
+            });
+        }).start();
         ui.removeCallbacks(giveUp);
         ui.postDelayed(giveUp, GIVE_UP_MS);
     }
@@ -342,8 +354,53 @@ public class PlayerActivity extends Activity {
     }
 
     /** Releases a Playback on its own thread; if that never finishes, the decoder is stuck. */
+    /**
+     * The bridge's loudness gain for this title (dB; it measures each Plex
+     * title as it streams, so a quiet Bluey isn't far softer than a YouTube
+     * song); 0 when it doesn't know yet.
+     */
+    private String gainUrl(Uri uri) {
+        java.util.List<String> segments = uri.getPathSegments();
+        int hls = segments.indexOf("hls");
+        return hls >= 0 && hls + 1 < segments.size() ? api + "/hls-gain/" + segments.get(hls + 1) : null;
+    }
+
+    private double gainFor(Uri uri) {
+        String url = gainUrl(uri);
+        if (url == null) {
+            return 0;
+        }
+        try {
+            return new JSONObject(http("GET", url)).optDouble("gain_db", 0);
+        } catch (Exception e) {
+            Log.w(TAG, "loudness gain", e);
+            return 0;
+        }
+    }
+
+    /** Louder through Android's loudness enhancer (it limits peaks), softer by the player's own volume. */
+    private static void evenOut(Playback p, double gainDb) {
+        if (gainDb >= 0.5) {
+            try {
+                p.louder = new LoudnessEnhancer(p.mp.getAudioSessionId());
+                p.louder.setTargetGain((int) Math.round(gainDb * 100));  // millibels
+                p.louder.setEnabled(true);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "loudness enhancer", e);
+                p.louder = null;
+            }
+        } else if (gainDb <= -0.5) {
+            float level = (float) Math.pow(10, gainDb / 20);
+            p.mp.setVolume(level, level);
+        }
+    }
+
     private static void close(Playback p) {
         p.run(() -> {
+            if (p.louder != null) {
+                p.louder.release();
+                p.louder = null;
+            }
             if (p.mp != null) {
                 p.mp.release();
                 p.mp = null;
