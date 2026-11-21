@@ -1369,9 +1369,11 @@ def tv_volume(change=None):
     (its mute button, which toggles)."""
     with lock:
         cfg = load()
-    tv = find_tv(cfg) if cfg.get("tv") else None
+    if not cfg.get("tv"):
+        return {"ok": False, "message": "No TV is set up (choose one in Settings)."}
+    tv = find_tv(cfg)
     if not tv:
-        return {"ok": False, "message": "No TV is set up."}
+        return {"ok": False, "message": "Can't find the TV on the network. Is it plugged in?"}
     kind = tv.get("kind") or "roku"
     if tv["power"] != "PowerOn":
         return {"ok": False, "kind": kind, "message": "The TV is off."}
