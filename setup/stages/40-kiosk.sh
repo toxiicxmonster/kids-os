@@ -34,7 +34,7 @@ install -d /etc/tablet-os
     line="${line%%#*}"
     [[ $line =~ ^[[:space:]]*([0-9a-fA-F]{4}):([0-9a-fA-F]{4})[[:space:]]*(.*)$ ]] || continue
     vendor="${BASH_REMATCH[1],,}" product="${BASH_REMATCH[2],,}" fixes=" ${BASH_REMATCH[3]} "
-    match="ACTION==\"add|change\", SUBSYSTEM==\"input\", KERNEL==\"event*\", ATTRS{idVendor}==\"$vendor\", ATTRS{idProduct}==\"$product\""
+    match="ACTION==\"add|change\", SUBSYSTEM==\"input\", KERNEL==\"event*\", ATTRS{id/vendor}==\"$vendor\", ATTRS{id/product}==\"$product\""
     [[ $fixes == *" as-touch "* ]] && echo "$match, ENV{ID_INPUT_TABLET}==\"1\", ENV{ID_INPUT_TABLET}=\"\", ENV{ID_INPUT_TABLET_PAD}=\"\", ENV{ID_INPUT_TOUCHSCREEN}=\"1\""
     [[ $fixes == *" debounce "* ]] && echo "${match/add|change/add}, ENV{ID_INPUT_TOUCHSCREEN}==\"1\", TAG+=\"systemd\", ENV{SYSTEMD_WANTS}+=\"tablet-touch-debounce.service\""
   done < "$panels"
