@@ -579,9 +579,16 @@ screen_size = None
 
 
 def add_item(cfg, key):
+    if not re.fullmatch(r"\d{1,12}", str(key or "")):
+        raise ValueError("that isn't a Plex title")
     if not any(m["key"] == key for m in cfg["movies"]):
-        item = plex_json(cfg, f"{cfg['server_url']}/library/metadata/{int(key)}",
-                         cfg["server_token"])["MediaContainer"]["Metadata"][0]
+        try:
+            item = plex_json(cfg, f"{cfg['server_url']}/library/metadata/{int(key)}",
+                             cfg["server_token"])["MediaContainer"]["Metadata"][0]
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise ValueError("Plex doesn't have that title") from e
+            raise
         if item.get("type") not in PLEX_TYPES:
             raise KeyError(key)  # only whole movies and shows go on the list
         cfg["movies"].append({"key": key, "title": item["title"], "year": item.get("year"),
@@ -2178,28 +2185,36 @@ def parent_on_desktop():
 # ---- HTTP server -------------------------------------------------------------------------
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    # A connection that sends nothing for a minute is dropped: without this, every
+    # half-open connection (a phone gone to sleep mid-request) kept a thread forever.
+    timeout = 60
+
     def log_message(self, fmt, *args):
         print(f"{self.client_address[0]} {fmt % args}", flush=True)
 
     def reply(self, code, body, ctype="application/json", headers=None):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        for name, value in (headers or {}).items():
-            self.send_header(name, value)
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            self.close_connection = True  # the client went away; nothing to tell it
 
     def body_json(self):
         length = int(self.headers.get("Content-Length") or 0)
         if not 0 < length <= 4096:
             return {}
         try:
-            return json.loads(self.rfile.read(length))
+            body = json.loads(self.rfile.read(length))
         except ValueError:
             return {}
+        return body if isinstance(body, dict) else {}  # a list, number or null is no body at all
 
     def handle_any(self, method):
         client = ipaddress.ip_address(self.client_address[0])
@@ -2544,8 +2559,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, {"schedule": schedule_of(cfg.root, cfg.kid)})
             if route == ("POST", "extra"):
                 own = kid_settings(cfg.root, cfg.kid)
-                minutes = int(self.body_json().get("minutes", 30))
-                if not 1 <= minutes <= 12 * 60:
+                minutes = self.body_json().get("minutes", 30)
+                if not isinstance(minutes, int) or not 1 <= minutes <= 12 * 60:
                     raise ValueError("1 minute to 12 hours")
                 own["extra_until"] = max(time.time(), own.get("extra_until", 0)) + minutes * 60
                 own.pop("sleep_until", None)
