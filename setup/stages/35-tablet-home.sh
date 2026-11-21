@@ -111,6 +111,19 @@ android_ready || {
   exit 1
 }
 
+# With nobody touching it (boot-time updates, a headless Android), Android's
+# screen goes off after its timeout and Waydroid then freezes the whole
+# container, installers included: the Dell's update hung on "Updating Kids
+# OS" with dex2oat frozen mid-install (2026-11-21). Keep it awake for this
+# stage, and unfreeze it if it froze anyway.
+waydroid container unfreeze >/dev/null 2>&1 || true
+waydroid shell -- input keyevent KEYCODE_WAKEUP || true
+stay_on="$(waydroid shell -- settings get global stay_on_while_plugged_in 2>/dev/null | tr -dc '0-9')"
+waydroid shell -- svc power stayon true || true
+( while sleep 5; do waydroid container unfreeze >/dev/null 2>&1; done ) &
+unfreezer=$!
+trap 'kill $unfreezer 2>/dev/null' EXIT
+
 for app in "${APPS[@]}"; do
   install -D -m 644 "/usr/local/share/tablet-os/$app.apk" "$SHARED/local/tmp/$app.apk"
   waydroid shell -- pm install -r "/data/local/tmp/$app.apk"
@@ -158,6 +171,8 @@ install -D -m 644 "$TABLET_DIR/files/android-removed-apps.txt" /etc/tablet-os/an
 tablet-android-apps apply
 
 waydroid shell -- am start -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null
+waydroid shell -- settings put global stay_on_while_plugged_in "${stay_on:-0}" || true
+kill $unfreezer 2>/dev/null || true
 if [[ $headless_session -eq 1 ]]; then
   sudo -u "$PARENT_USER" XDG_RUNTIME_DIR="$HEADLESS_RUNTIME" waydroid session stop || true
   sleep 3
