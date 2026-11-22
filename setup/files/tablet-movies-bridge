@@ -4207,7 +4207,7 @@ def firetv_shell(ip, command, timeout=15):
     if "unauthorized" in err:
         raise TVError("the TV hasn't allowed this box (choose it again and allow it on the TV)")
     if out.returncode:
-        raise TVError(err or out.stdout.strip()[-300:] or "the TV didn't answer")
+        raise TVError((err + "\n" + (out.stdout or "")).strip()[-500:] or "the TV didn't answer")
     return out.stdout
 
 
