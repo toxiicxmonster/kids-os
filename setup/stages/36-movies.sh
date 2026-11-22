@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Movies & TV: the bridge service that plays approved Plex (and Netflix) titles on the chosen Roku
-# TV (the Movies Android app itself is built and installed by stage 35).
+# Movies & TV: the bridge service that plays approved Plex, Jellyfin and Netflix titles on the
+# chosen TV (the Movies Android app itself is built and installed by stage 35).
 set -euo pipefail
 
 # Pillow: Netflix posters are made from Netflix's wide title art. ffmpeg: the
@@ -42,6 +42,14 @@ systemctl enable --now kidsos-ytdlp-update.timer
 [[ -x /opt/kidsos-airplay/bin/python3 ]] || python3 -m venv /opt/kidsos-airplay
 /opt/kidsos-airplay/bin/pip install -q "pyatv==0.18.0" "srptools==1.0.1"
 install -m 755 "$TABLET_DIR/files/tablet-airplay" /usr/local/sbin/tablet-airplay
+
+# The other TV kinds (built, not yet tried on real ones): tablet-cast (Google TV /
+# Android TV, Chromecast and Vizio: Cast, the Android TV remote protocol,
+# SmartCast) in its own pinned venv, and adb for a Fire TV.
+[[ -x /opt/kidsos-cast/bin/python3 ]] || python3 -m venv /opt/kidsos-cast
+/opt/kidsos-cast/bin/pip install -q "pychromecast==14.1.1" "androidtvremote2==0.3.2"
+install -m 755 "$TABLET_DIR/files/tablet-cast" /usr/local/sbin/tablet-cast
+DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends adb >/dev/null
 
 id tablet-movies &>/dev/null || adduser --system --group --home /var/lib/tablet-movies --no-create-home tablet-movies
 install -d -m 700 -o tablet-movies -g tablet-movies /var/lib/tablet-movies

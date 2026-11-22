@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Kids OS Movies bridge: plays approved Plex and Jellyfin movies and shows on
-the chosen Roku or LG webOS TV, or on the tablet itself.
+the chosen TV (Roku and LG webOS, tested; Samsung, Google TV / Android TV,
+Chromecast, Vizio, Fire TV and Apple TV, built but not yet tried on real ones),
+or on the tablet itself.
 
 Netflix titles can go on the list too: they open in the Netflix app on the
 Roku (ECP deep link), in whichever Netflix profile was used last on that TV,
@@ -38,7 +40,7 @@ the host itself):
   GET  /api/link                has the code been entered yet?
   GET  /api/profiles            Plex Home profiles
   POST /api/profile/<id>        use this profile for playback
-  GET  /api/tvs                 Roku and LG webOS TVs on the network
+  GET  /api/tvs                 the TVs on the network (every kind; "kind", "label")
   POST /api/tv/<serial>         use this TV (an LG shows a prompt: Accept there within a minute)
   GET  /api/library?q=          movies the profile can see
   POST/DELETE /api/movies/<key> add/remove an approved movie
@@ -55,6 +57,8 @@ Web portal for the parents' phones (home network only, PIN-protected):
   GET  /api/portal/library?q=   search, POST/DELETE /api/portal/items/<key>
   POST /api/portal/netflix      {"ref": "<netflix.com/title/... link or its number>"}
   GET/POST/DELETE /api/portal/jellyfin  the same Jellyfin link as /api/jellyfin
+  GET/POST /api/portal/posters  TMDB and OMDb keys for posters ({"tmdb": key|null, "omdb": key|null};
+                                GET says only which are set)
   GET/DELETE /api/portal/plex   Plex's link (DELETE unlinks); POST/GET plex-link starts linking
                                 (a plex.tv/link code) and checks it; GET plex-profiles, then
                                 POST plex-profile/<id> picks the profile (and the server)
@@ -62,7 +66,9 @@ Web portal for the parents' phones (home network only, PIN-protected):
   GET/POST /api/portal/tv-volume  the TV's: LG {"level": 0-100, "mute": bool}, Roku {"step": ±n, "mute": true}
   GET/POST /api/portal/tv-levels  a TV volume for each kind ({"enabled", "plex", "netflix", "youtube"})
   GET  /api/portal/tvs          TVs on the network (and the chosen one); POST /api/portal/tv/<serial>
-  POST /api/portal/airplay-pair {} starts (the LG shows a PIN), then {"pin": "1234"}; {"cancel": true}
+  POST /api/portal/airplay-pair {"what": "airplay"} starts pairing (the TV shows a code), then
+                                {"pin": "1234"}; {"cancel": true}. "what": airplay (LG, Samsung,
+                                Apple TV), companion (Apple TV), remote (Google TV), vizio
   GET  /api/portal/kids         the kids; lists, schedule and history routes take ?kid=
   GET/POST /api/portal/schedule allowed hours, daily limit; POST extra, sleep (?kid=)
   GET  /api/portal/history      what the kid played and opened; GET now, POST tv-stop
@@ -95,6 +101,7 @@ import itertools
 import json
 import os
 import secrets
+import shlex
 import pathlib
 import random
 import re
@@ -1087,11 +1094,16 @@ def jellyfin_tv_start(cfg, item, key, tv):
     real TV yet: the remote control part is Jellyfin's documented API."""
     play_key = pick_episode(cfg, key) if item.get("kind") == "show" else key
     item_id = jf_id(play_key)
-    ip, lg = tv["ip"], tv.get("kind") == "lg"
+    ip, kind = tv["ip"], tv_kind(tv)
+    lg = kind == "lg"
     try:
         if lg:
             with lg_session(tv) as s:
                 s.launch(LG_JELLYFIN_APP)
+        elif kind == "firetv":
+            firetv_launch(ip, FIRETV_JELLYFIN)
+        elif kind in OTHER_TVS:
+            pass  # (no app to open from here: its Jellyfin app must already be open)
         else:
             fetch(f"http://{ip}:8060/keypress/Home", "POST", timeout=5)
             time.sleep(2.5)
@@ -1102,8 +1114,9 @@ def jellyfin_tv_start(cfg, item, key, tv):
         print(f"Jellyfin on the TV: {e!r}", flush=True)
         return {"result": "plex_closed", "message": "Jellyfin isn't on the TV."}
     session = jellyfin_tv_session(cfg, ip, 30)
-    playing = (lambda: lg_media(tv) in ("play", "buffer", "?")) if lg else \
-        (lambda: roku_player(ip)[0] in ("play", "buffer"))
+    playing = {"lg": lambda: lg_media(tv) in ("play", "buffer", "?"),
+               "roku": lambda: roku_player(ip)[0] in ("play", "buffer"),
+               "firetv": lambda: firetv_state(ip) in ("play", "buffer")}.get(kind, lambda: True)
     if session:
         for attempt in range(2):
             jf_json(cfg, f"/Sessions/{session}/Playing", "POST",
@@ -1129,6 +1142,10 @@ def jellyfin_poster(cfg, key):
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
+    item = next((m for m in cfg["movies"] if m["key"] == key), {})
+    found = poster_lookup(cfg, item.get("title"), item.get("kind"), item.get("year"))
+    if found:
+        return found
     wide = []
     for kind in ("Backdrop", "Thumb"):
         wide.append(f"/Items/{item_id}/Images/{kind}")
@@ -1162,13 +1179,17 @@ def poster(cfg, key):
     path = POSTERS / (f"nf{int(key[2:])}.2.jpg" if netflix else f"{int(key)}.jpg")
     if not path.exists():
         movie = next((m for m in cfg["movies"] if m["key"] == key), None)
-        if not movie or not movie.get("thumb"):
+        if not movie:
             raise KeyError(key)
-        if netflix:
-            data = None
-            if movie.get("netflix_type") == "series":
+        kind = ("show" if movie.get("netflix_type") == "series" else "movie") if netflix else movie.get("kind")
+        if netflix or not movie.get("thumb"):
+            data = poster_lookup(cfg, movie["title"], kind, movie.get("year"))
+            if not data and netflix and kind == "show":
                 data = tvmaze_poster(movie["title"])
-            data = data or netflix_poster(fetch(movie["thumb"], raw=True))
+            if not data and movie.get("thumb"):
+                data = netflix_poster(fetch(movie["thumb"], raw=True))
+            if not data:
+                raise KeyError(key)
         else:
             q = urllib.parse.urlencode({"width": 400, "height": 600, "minSize": 1, "url": movie["thumb"]})
             data = fetch(f"{cfg['server_url']}/photo/:/transcode?{q}",
@@ -1180,31 +1201,159 @@ def poster(cfg, key):
     return path.read_bytes()
 
 
-def tvmaze_poster(title):
-    """A 400x600 poster for a TV show, the same shape and style as Plex's,
-    from TVmaze (free, no key; 680x1000 show posters). Only TVmaze's best
-    match, and only if its name is close to the title; None if there isn't one."""
+# ---- posters from TMDB and OMDb (optional, each with the parents' own free key) ----------
+#
+# Plex and Jellyfin give their own posters (their servers mostly get them from
+# TMDB). These fill the gaps: Netflix titles (their page has only wide art) and
+# titles a server has no poster for. TMDB first, then OMDb; the closest-named
+# match only. Keys are kept in cfg["posters"], never in a reply.
+
+TMDB_API = "https://api.themoviedb.org/3"
+TMDB_IMAGES = "https://image.tmdb.org/t/p/w500"
+OMDB_API = "https://www.omdbapi.com/"
+POSTER_SOURCES = ("tmdb", "omdb")
+
+
+def squash_title(s):
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower().replace("’", "'"))
+
+
+def close_title(a, b):
     import difflib
-    from PIL import Image
-    squash = lambda s: re.sub(r"[^a-z0-9]", "", s.lower().replace("’", "'"))
-    try:
-        hits = json.loads(fetch("https://api.tvmaze.com/search/shows?" +
-                                urllib.parse.urlencode({"q": title}), timeout=10))
-        show = hits[0]["show"] if hits else None
-        image = show and (show.get("image") or {}).get("original")
-        if not image or difflib.SequenceMatcher(None, squash(title), squash(show["name"])).ratio() < 0.6:
-            print(f"no TVmaze poster for {title!r}", flush=True)
-            return None
-        art = Image.open(io.BytesIO(fetch(image, raw=True, timeout=15))).convert("RGB")
-    except (OSError, ValueError, KeyError, IndexError) as e:
-        print(f"TVmaze poster for {title!r} failed: {e!r}", flush=True)
+    return difflib.SequenceMatcher(None, squash_title(a), squash_title(b)).ratio() >= 0.6
+
+
+def tmdb_json(key, path, params=None):
+    """TMDB with either kind of key: a v3 API key (32 hex) or a v4 read access token."""
+    headers = {"Accept": "application/json"}
+    params = dict(params or {})
+    if key.startswith("eyJ"):
+        headers["Authorization"] = f"Bearer {key}"
+    else:
+        params["api_key"] = key
+    return json.loads(fetch(f"{TMDB_API}{path}?{urllib.parse.urlencode(params)}", headers=headers, timeout=10))
+
+
+def tmdb_poster_url(key, title, kind, year=None):
+    tv = kind == "show"
+    year_param = "first_air_date_year" if tv else "year"
+    params = {"query": title, "include_adult": "false"}
+    if year:
+        params[year_param] = year
+    hits = tmdb_json(key, "/search/tv" if tv else "/search/movie", params).get("results") or []
+    if not hits and year:  # a year off by one (release vs. listing) is common
+        params.pop(year_param)
+        hits = tmdb_json(key, "/search/tv" if tv else "/search/movie", params).get("results") or []
+    for hit in hits[:5]:
+        names = (hit.get("name"), hit.get("original_name")) if tv else (hit.get("title"), hit.get("original_title"))
+        if hit.get("poster_path") and any(close_title(title, n) for n in names if n):
+            return TMDB_IMAGES + hit["poster_path"]
+    return None
+
+
+def omdb_json(key, params):
+    return json.loads(fetch(f"{OMDB_API}?{urllib.parse.urlencode({'apikey': key, **params})}", timeout=10))
+
+
+def omdb_poster_url(key, title, kind, year=None):
+    params = {"t": title, "type": "series" if kind == "show" else "movie"}
+    if year:
+        params["y"] = year
+    hit = omdb_json(key, params)
+    if hit.get("Response") != "True" and year:
+        hit = omdb_json(key, {k: v for k, v in params.items() if k != "y"})
+    poster = hit.get("Poster")
+    if hit.get("Response") == "True" and poster and poster != "N/A" and close_title(title, hit.get("Title")):
+        return poster
+    return None
+
+
+def poster_lookup(cfg, title, kind, year=None):
+    """A 400x600 poster from TMDB or OMDb (whichever has a key and a match), or None."""
+    keys = (cfg.root if isinstance(cfg, KidView) else cfg).get("posters") or {}
+    if not title or not keys:
         return None
+    for source, find in (("tmdb", tmdb_poster_url), ("omdb", omdb_poster_url)):
+        if not keys.get(source):
+            continue
+        try:
+            url = find(keys[source], title, kind, year)
+            if url:
+                print(f"poster for {title!r} from {source.upper()}", flush=True)
+                return poster_fit(fetch(url, raw=True, timeout=15))
+        except (OSError, ValueError, KeyError) as e:
+            print(f"{source.upper()} poster for {title!r} failed: {e!r}", flush=True)
+    return None
+
+
+def poster_fit(data):
+    """Any poster image as 400x600 (scaled to cover, centered)."""
+    from PIL import Image
+    art = Image.open(io.BytesIO(data)).convert("RGB")
     scale = max(400 / art.width, 600 / art.height)
     art = art.resize((round(art.width * scale), round(art.height * scale)), Image.LANCZOS)
     left, top = (art.width - 400) // 2, (art.height - 600) // 2
     out = io.BytesIO()
     art.crop((left, top, left + 400, top + 600)).save(out, "JPEG", quality=88)
     return out.getvalue()
+
+
+def posters_public(cfg):
+    keys = cfg.get("posters") or {}
+    return {source: bool(keys.get(source)) for source in POSTER_SOURCES}
+
+
+def set_poster_keys(cfg, change):
+    """{"tmdb": key | null, "omdb": key | null}: each new key is tried first. Titles'
+    posters made without it are fetched again."""
+    keys = dict(cfg.get("posters") or {})
+    for source in POSTER_SOURCES:
+        if source not in change:
+            continue
+        key = change[source]
+        if not key:
+            keys.pop(source, None)
+            continue
+        key = str(key).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{6,400}", key):
+            raise ValueError(f"that doesn't look like a {source.upper()} key")
+        try:
+            if source == "tmdb":
+                tmdb_json(key, "/configuration")
+            elif omdb_json(key, {"t": "Bambi", "type": "movie"}).get("Error", "").startswith("Invalid API key"):
+                raise ValueError("OMDb didn't accept that key")
+        except urllib.error.HTTPError as e:
+            raise ValueError(f"{source.upper()} didn't accept that key") from e
+        except OSError as e:
+            raise ValueError(f"{source.upper()} can't be reached right now") from e
+        keys[source] = key
+    if keys:
+        cfg["posters"] = keys
+    else:
+        cfg.pop("posters", None)
+    save(cfg)
+    for old in POSTERS.glob("*.jpg"):  # Netflix and Jellyfin ones may change; Plex's don't
+        if old.name.startswith(("nf", "jf")):
+            old.unlink(missing_ok=True)
+    return posters_public(cfg)
+
+
+def tvmaze_poster(title):
+    """A 400x600 poster for a TV show, the same shape and style as Plex's,
+    from TVmaze (free, no key; 680x1000 show posters). Only TVmaze's best
+    match, and only if its name is close to the title; None if there isn't one."""
+    try:
+        hits = json.loads(fetch("https://api.tvmaze.com/search/shows?" +
+                                urllib.parse.urlencode({"q": title}), timeout=10))
+        show = hits[0]["show"] if hits else None
+        image = show and (show.get("image") or {}).get("original")
+        if not image or not close_title(title, show["name"]):
+            print(f"no TVmaze poster for {title!r}", flush=True)
+            return None
+        return poster_fit(fetch(image, raw=True, timeout=15))
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        print(f"TVmaze poster for {title!r} failed: {e!r}", flush=True)
+        return None
 
 
 def netflix_poster(art, strip=(229, 9, 20)):
@@ -1250,12 +1399,28 @@ def roku_info(ip):
     return tv
 
 
-def discover_tvs(wait=3.0):
-    """Roku TVs (ECP) and LG webOS TVs (their second-screen service) on the home network."""
+def discover_tvs(wait=3.0, others=True):
+    """Roku TVs (ECP) and LG webOS TVs (their second-screen service) on the home
+    network; with others, every other kind too (SSDP for Samsung and Fire TV,
+    the helpers' mDNS scans for Cast and Apple TV)."""
+    sts = [b"roku:ecp", LG_SSDP_ST.encode()] + ([SAMSUNG_SSDP_ST.encode(), DIAL_SSDP_ST.encode()] if others else [])
     searches = [(b"M-SEARCH * HTTP/1.1\r\nHost: 239.255.255.250:1900\r\nMan: \"ssdp:discover\"\r\n"
-                 b"ST: " + st + b"\r\nMX: 2\r\n\r\n") for st in (b"roku:ecp", LG_SSDP_ST.encode())]
+                 b"ST: " + st + b"\r\nMX: 2\r\n\r\n") for st in sts]
     ips = set()
     lg = {}  # ip -> device description URL
+    samsung, dial = set(), {}
+    scans = {}  # the helpers' results
+
+    def scan(name, cmd):
+        try:
+            scans[name] = helper_json(cmd, timeout=20)
+        except OSError as e:
+            print(f"TV scan ({name}): {e}", flush=True)
+    threads = [threading.Thread(target=scan, args=(name, cmd), daemon=True)
+               for name, cmd in (("cast", [CAST, "discover"]), ("airplay", [AIRPLAY, "scan"]))
+               if others and os.access(cmd[0], os.X_OK)]
+    for t in threads:
+        t.start()
     socks = []
     for addr in local_ipv4s():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1273,7 +1438,13 @@ def discover_tvs(wait=3.0):
             except socket.timeout:
                 continue
             low = data.lower()
-            if LG_SSDP_ST.encode().lower() in low or b"webos" in low:
+            st = (re.search(rb"(?im)^st:\s*(\S+)", data) or [b"", b""])[1].lower()
+            if st == DIAL_SSDP_ST.encode().lower():
+                found = re.search(rb"(?im)^location:\s*(\S+)", data)
+                dial[peer[0]] = found[1].decode() if found else None
+            elif st == SAMSUNG_SSDP_ST.encode().lower():
+                samsung.add(peer[0])
+            elif LG_SSDP_ST.encode().lower() in low or b"webos" in low:
                 found = re.search(rb"(?im)^location:\s*(\S+)", data)
                 lg[peer[0]] = found[1].decode() if found else None
             elif b"roku" in low:
@@ -1286,6 +1457,13 @@ def discover_tvs(wait=3.0):
             pass
     for ip, location in sorted(lg.items()):
         tvs.append(lg_describe(ip, location))
+    if others:
+        for t in threads:
+            t.join(20)
+        tvs += discover_other({tv["ip"] for tv in tvs}, samsung - ips - set(lg), dial, scans.get("cast") or [],
+                              scans.get("airplay") or [])
+    for tv in tvs:
+        tv["label"] = TV_LABELS[tv_kind(tv)]
     return tvs
 
 
@@ -1296,13 +1474,15 @@ def find_tv(cfg):
         return None
     if tv.get("kind") == "lg":
         return lg_find(tv)
+    if tv.get("kind") in OTHER_TVS:
+        return other_find(tv)
     try:
         info = roku_info(tv["ip"])
         if info["serial"] == tv["serial"]:
             return info
     except OSError:
         pass
-    for info in discover_tvs():
+    for info in discover_tvs(others=False):
         if info["serial"] == tv["serial"]:
             with lock:
                 fresh = load()
@@ -1508,6 +1688,8 @@ def start_dance(cfg, ids):
         return {"result": "tv_off", "message": "The TV is off."}
     if tv.get("kind") == "lg":
         return lg_start_dance(tv, queue)
+    if tv.get("kind") in OTHER_TVS:
+        return other_start_dance(tv, queue)
     ip = tv["ip"]
     try:
         roku_key(ip, "Home")
@@ -1572,14 +1754,15 @@ def tv_now():
         cfg = load()
     tv = find_tv(cfg) if cfg.get("tv") else None
     out = {"tv": None, "last": dict(last_play) or None}
-    if tv and tv.get("kind") == "lg":
+    if tv and tv_kind(tv) != "roku":
         with airplay_lock:
             airplay = dict(airplay_now)
-        if airplay.get("state"):  # a Plex title we sent over AirPlay
+        if airplay.get("state"):  # a Plex or Jellyfin title we sent over AirPlay or Cast
             app, state = "Movies & TV", "play" if airplay["state"] == "playing" else airplay["state"]
             position = int(airplay.get("position") or 0)
         else:
-            app, state = lg_now(tv) if tv["power"] == "PowerOn" else (None, None)
+            now = lg_now if tv_kind(tv) == "lg" else other_now
+            app, state = now(tv) if tv["power"] == "PowerOn" else (None, None)
             position = 0
         out["tv"] = {"name": tv.get("location") or tv.get("name"), "power": tv["power"], "app": app,
                      "state": state, "position": position}
@@ -1617,6 +1800,12 @@ def tv_stop():
         airplay_stop()
         with lg_session(tv) as s:
             s.button("HOME")
+    elif tv.get("kind") in OTHER_TVS:
+        airplay_stop()
+        try:
+            other_home(tv)
+        except OSError as e:
+            return {"ok": False, "message": f"The TV didn't go home: {e}."}
     else:
         roku_key(tv["ip"], "Home")
     return {"ok": True}
@@ -1712,6 +1901,8 @@ def tv_volume(change=None):
     if tv["power"] != "PowerOn":
         return {"ok": False, "kind": kind, "message": "The TV is off."}
     change = change or {}
+    if kind in OTHER_TVS:
+        return other_volume(tv, change)
     if kind == "lg":
         with lg_session(tv) as s:
             if "level" in change:
@@ -1723,13 +1914,14 @@ def tv_volume(change=None):
                 s.set_mute(bool(change["mute"]))
             level, muted, output = s.volume()
             playing = lg_learn_level(s) if "level" in change else LG_APP_KINDS.get(s.foreground_app())
-        return {"ok": True, "kind": "lg", "level": level, "muted": muted, "output": output, "playing": playing}
+        return {"ok": True, "kind": "lg", "control": "level", "level": level, "muted": muted, "output": output,
+                "playing": playing}
     if change.get("mute"):
         roku_key(tv["ip"], "VolumeMute")
     step = int(change.get("step") or 0)
     for _ in range(min(abs(step), 5)):
         roku_key(tv["ip"], "VolumeUp" if step > 0 else "VolumeDown")
-    return {"ok": True, "kind": "roku"}
+    return {"ok": True, "kind": "roku", "control": "buttons", "mute": True}
 
 
 def system_status():
@@ -1853,6 +2045,8 @@ def start(cfg, key):
         return {"result": "tv_off", "message": "The TV is off."}
     if tv.get("kind") == "lg":
         return lg_start(cfg, item, key, tv)
+    if tv.get("kind") in OTHER_TVS:
+        return other_start(cfg, item, key, tv)
 
     if item.get("kind") == "netflix":
         # Opens Netflix straight to the title, from anywhere (even another app).
@@ -2880,7 +3074,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if body.get("cancel"):
                 airplay_pair_cancel()
                 return self.reply(200, {"result": "cancelled"})
-            return self.reply(200, airplay_pair_start())
+            return self.reply(200, airplay_pair_start(str(body.get("what") or "airplay")))
         if authed and route == ("GET", "volume"):
             return self.reply(200, {"percent": kid_volume()})
         if authed and route == ("POST", "volume"):
@@ -2968,6 +3162,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                                      body.get("password")))
             if route == ("DELETE", "jellyfin"):
                 return self.reply(200, jellyfin_unlink(cfg.root))
+            if route == ("GET", "posters"):
+                return self.reply(200, posters_public(cfg.root))
+            if route == ("POST", "posters"):
+                return self.reply(200, set_poster_keys(cfg.root, self.body_json()))
             if route == ("POST", "netflix"):
                 key = add_netflix(cfg, self.body_json().get("ref", ""))
                 return self.reply(200, {"key": key, "count": len(cfg["movies"])})
@@ -3320,7 +3518,7 @@ def lg_find(tv):
             return {**tv, "ip": ip, "power": "NotPaired"}
         except OSError:
             if ip == tv["ip"]:  # moved? look for it once
-                ips += [t["ip"] for t in discover_tvs() if t.get("kind") == "lg"
+                ips += [t["ip"] for t in discover_tvs(others=False) if t.get("kind") == "lg"
                         and t["serial"] == tv["serial"] and t["ip"] != tv["ip"]]
             continue
         if ip != tv["ip"]:
@@ -3435,19 +3633,8 @@ def lg_start(cfg, item, key, tv):
         print("LG: not playing 20s after asking; asking again", flush=True)
     else:
         return {"result": "error", "message": "The TV didn't start it."}
-    threading.Thread(target=lg_plex_from_start, args=(tv, send), daemon=True).start()
+    threading.Thread(target=plex_from_start, args=(lambda: lg_media(tv) == "play", send), daemon=True).start()
     return {"result": "playing", "message": "It's playing on the TV!"}
-
-
-def lg_plex_from_start(tv, send):
-    """Plex can resume despite the reset, and the LG doesn't say where it is,
-    so once it plays, jump to the start (a few seconds in, it's no harm)."""
-    if wait_for(lambda: lg_media(tv) == "play", 40):
-        time.sleep(2)
-        try:
-            send("seekTo", {"type": "video", "offset": 0})
-        except OSError as e:
-            print(f"LG Plex seek to start: {e!r}", flush=True)
 
 
 # ---- Plex on the LG over AirPlay ------------------------------------------------------
@@ -3459,29 +3646,41 @@ def lg_plex_from_start(tv, send):
 # it plays; ending it stops playback. Pairing (a PIN on the TV) is done once with
 # --lg airplay-pair; the credentials stay in cfg["tv"]["airplay"].
 
-TV_SECRETS = ("client_key", "airplay")  # never in a reply
+TV_SECRETS = ("client_key", "airplay", "token", "companion", "remote", "vizio")  # never in a reply
 
 
 def keep_airplay(cfg, chosen):
-    """Choosing the same TV again keeps its AirPlay pairing."""
+    """Choosing the same TV again keeps its pairings (AirPlay and the others)."""
     old = cfg.get("tv") or {}
-    if old.get("airplay") and old.get("serial") == chosen.get("serial"):
-        chosen["airplay"] = old["airplay"]
+    if old.get("serial") == chosen.get("serial"):
+        for what in ("airplay", "companion", "remote", "vizio"):
+            if old.get(what) and what not in chosen:
+                chosen[what] = old[what]
 
 
 def public_tv(tv):
-    return {k: v for k, v in tv.items() if k not in TV_SECRETS} | {"airplay_paired": bool(tv.get("airplay"))}
+    kind = tv_kind(tv)
+    return {k: v for k, v in tv.items() if k not in TV_SECRETS} | {
+        "airplay_paired": bool(tv.get("airplay")), "label": TV_LABELS[kind],
+        "pairings": {what: bool(tv.get(what)) for what in TV_PAIRINGS.get(kind, ())}}
 
 
 def choose_tv(serial):
     """The TV picks go to (Movies & TV setup, or the web page's Settings). An
-    LG shows its pairing prompt: this waits up to a minute for Accept."""
+    LG, a Samsung or a Fire TV shows a prompt: this waits for Accept/Allow."""
     tv = next((t for t in discover_tvs() if t["serial"] == serial), None)
     if not tv:
         raise KeyError(serial)
     chosen = {k: tv.get(k) for k in ("serial", "ip", "name", "location")}
     if tv.get("kind") == "lg":
         chosen.update(kind="lg", client_key=lg_pair(tv["ip"]))
+    elif tv.get("kind") == "samsung":
+        chosen.update(kind="samsung", token=samsung_pair(tv["ip"]))  # Allow on the TV
+    elif tv.get("kind") == "firetv":
+        firetv_pair(tv["ip"])  # allow it on the TV
+        chosen["kind"] = "firetv"
+    elif tv.get("kind") in OTHER_TVS:
+        chosen["kind"] = tv["kind"]
     with lock:
         cfg = load()
         keep_airplay(cfg, chosen)
@@ -3497,26 +3696,41 @@ airplay_pairing = {}  # "proc", "err" (its stderr so far), "at"
 AIRPLAY_PAIR_WAIT = 180  # seconds to type the PIN
 
 
-def airplay_pair_start():
+def pair_command(tv, what):
+    """The helper that pairs this TV for `what` (it asks for the code on stdin)."""
+    kind, ip = tv_kind(tv), tv["ip"]
+    if what not in TV_PAIRINGS.get(kind, ()):
+        raise ValueError(f"{TV_LABELS[kind]} TVs don't pair that way")
+    if what == "airplay":
+        return [AIRPLAY, "pair", ip], {"TABLET_AIRPLAY_MODE": "classic" if kind == "appletv" else "v2"}
+    if what == "companion":
+        return [AIRPLAY, "pair", ip, "companion"], {"TABLET_AIRPLAY_MODE": "classic"}
+    if what == "remote":
+        return [CAST, "remote-pair", ip], {}
+    return [CAST, "vizio-pair", ip], {}
+
+
+def airplay_pair_start(what="airplay"):
     with lock:
         tv = load().get("tv") or {}
-    if tv.get("kind") != "lg":
-        raise ValueError("AirPlay is for an LG TV: choose one first")
+    if not tv:
+        raise ValueError("Choose the TV first")
+    cmd, env = pair_command(tv, what)
     airplay_pair_cancel()
-    proc = subprocess.Popen([AIRPLAY, "pair", tv["ip"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            env={**os.environ, **env})
     err = bytearray()
 
     def read_err():
         while chunk := os.read(proc.stderr.fileno(), 256):
             err.extend(chunk)
     threading.Thread(target=read_err, daemon=True).start()
-    airplay_pairing.update(proc=proc, err=err, at=time.time())
+    airplay_pairing.update(proc=proc, err=err, at=time.time(), what=what)
     end = time.time() + 40  # finding the TV, then its PIN on screen
     while time.time() < end and proc.poll() is None:
         if b"PIN" in err:
             threading.Timer(AIRPLAY_PAIR_WAIT, airplay_pair_cancel, args=(proc,)).start()
-            return {"result": "pin", "message": "Type the PIN the TV shows."}
+            return {"result": "pin", "message": "Type the code the TV shows."}
         time.sleep(0.3)
     airplay_pair_cancel()
     tail = err.decode(errors="replace").strip().splitlines()[-1:] or ["no answer"]
@@ -3527,9 +3741,10 @@ def airplay_pair_finish(pin):
     proc = airplay_pairing.get("proc")
     if not proc or proc.poll() is not None:
         raise ValueError("Start the pairing again (the PIN on the TV is only good for a few minutes)")
-    pin = re.sub(r"\D", "", str(pin))
+    what = airplay_pairing.get("what", "airplay")
+    pin = re.sub(r"[^0-9A-Fa-f]" if what == "remote" else r"\D", "", str(pin))  # Google TV: 6 hex digits
     if not 4 <= len(pin) <= 8:
-        raise ValueError("The PIN is the 4 numbers on the TV")
+        raise ValueError("The code is the 4 to 6 characters on the TV")
     try:
         proc.stdin.write(pin.encode() + b"\n")
         proc.stdin.close()
@@ -3544,12 +3759,12 @@ def airplay_pair_finish(pin):
         return {"result": "error", "message": "That PIN didn't work. Try again."}
     with lock:
         cfg = load()
-        if (cfg.get("tv") or {}).get("kind") != "lg":
+        if what not in TV_PAIRINGS.get(tv_kind(cfg.get("tv")), ()):
             return {"result": "error", "message": "The TV changed while pairing."}
-        cfg["tv"]["airplay"] = credentials.splitlines()[-1]
+        cfg["tv"][what] = credentials.splitlines()[-1]
         save(cfg)
-    print("AirPlay paired from the web page", flush=True)
-    return {"result": "paired", "message": "Paired! Plex titles play on the TV over AirPlay."}
+    print(f"{what} paired from the web page", flush=True)
+    return {"result": "paired", "message": PAIRED_MESSAGES[what]}
 
 
 def airplay_pair_cancel(only=None):
@@ -3626,7 +3841,7 @@ def airplay_next(playing):
         kid = playing.get("kid")
         cfg = for_kid(root, kid) if kid else root
         tv = cfg.get("tv") or {}
-        if generation != playing.get("generation") or paused_until(cfg) is not None or not tv.get("airplay"):
+        if generation != playing.get("generation") or paused_until(cfg) is not None or not tv_player(tv, ""):
             return
         if kid and not kid_allowed(root, kid)[0]:
             return
@@ -3647,9 +3862,9 @@ def airplay_start(cfg, item, key, tv, episode=None):
     play_key = episode or (pick_episode(cfg, key) if show else key)
     sid = stream_start(play_key, size=TV_STREAM_SIZE, bitrate=TV_STREAM_BITRATE, client=tv["ip"], show=show)
     url = f"http://{local_ip_toward(tv['ip'])}:{LISTEN[1]}/api/hls/{sid}/start.m3u8"
+    cmd, env = tv_player(tv, url)  # AirPlay (LG, Samsung, Apple TV) or Cast
     try:
-        proc = subprocess.Popen([AIRPLAY, "play", tv["ip"], url], stdout=subprocess.PIPE, text=True,
-                                env={**os.environ, "TABLET_AIRPLAY_CREDENTIALS": tv["airplay"]})
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, env={**os.environ, **env})
     except OSError as e:
         print(f"AirPlay: {e!r}", flush=True)
         stream_stop(cfg, sid)
@@ -3778,6 +3993,636 @@ def lg_cli(args):
     return 0
 
 
+# ---- other TVs: Samsung, Google TV / Android TV, Chromecast, Vizio, Fire TV, Apple TV -----
+#
+# Built from each platform's documented (or widely used) protocol, but NOT yet
+# tried on a real TV of any of these kinds (the README says so); Roku and LG
+# above are the tested ones. Each kind has the same few things:
+#   - power: "PowerOn" / "PowerOff" (None: can't be reached)
+#   - home: back to its home screen (the parents' Stop)
+#   - Netflix and YouTube: open the app at the title (Cast queues a dance party)
+#   - Plex and Jellyfin: the bridge's own HLS stream (as for the tablet and the
+#     LG), sent over Cast (Google TV, Chromecast, Vizio) or AirPlay (Samsung,
+#     Apple TV) and followed like the LG's AirPlay; a Fire TV runs the Plex or
+#     Jellyfin app instead (Plex Companion / Jellyfin remote control)
+#   - "On the TV now" and the volume (a level over Cast, otherwise buttons)
+# Helpers: tablet-cast (Cast, the Android TV remote protocol, Vizio SmartCast),
+# tablet-airplay (AirPlay, an Apple TV's Companion protocol) and adb (Fire TV).
+
+CAST = os.environ.get("TABLET_CAST", "/usr/local/sbin/tablet-cast")
+ADB = os.environ.get("TABLET_ADB", "/usr/bin/adb")
+SAMSUNG_SSDP_ST = "urn:samsung.com:device:RemoteControlReceiver:1"
+DIAL_SSDP_ST = "urn:dial-multiscreen-org:service:dial:1"
+SAMSUNG_NETFLIX_APPS = ("3201907018807", "11101200001")  # Tizen 2019+, then older
+SAMSUNG_YOUTUBE_APP = "111299001912"
+FIRETV_PLEX = "com.plexapp.android"
+FIRETV_JELLYFIN = "org.jellyfin.androidtv"
+ANDROID_TV_APPS = {"com.netflix.ninja": "Netflix", "com.amazon.firetv.youtube": "YouTube",
+                   "com.google.android.youtube.tv": "YouTube", FIRETV_PLEX: "Plex", FIRETV_JELLYFIN: "Jellyfin"}
+TV_LABELS = {"roku": "Roku", "lg": "LG", "samsung": "Samsung", "googletv": "Google TV", "cast": "Chromecast",
+             "vizio": "Vizio", "firetv": "Fire TV", "appletv": "Apple TV"}
+OTHER_TVS = ("samsung", "googletv", "cast", "vizio", "firetv", "appletv")
+CAST_TVS = ("googletv", "cast", "vizio")
+# Pairings after choosing the TV (web page: start, then the code the TV shows).
+TV_PAIRINGS = {"lg": ("airplay",), "samsung": ("airplay",), "appletv": ("airplay", "companion"),
+               "googletv": ("remote",), "vizio": ("vizio",)}
+PAIRED_MESSAGES = {
+    "airplay": "Paired! Plex and Jellyfin titles play on the TV over AirPlay.",
+    "companion": "Paired! The box can open Netflix and YouTube on the Apple TV, and go Home.",
+    "remote": "Paired! The box can open Netflix on the TV, see if it's on and go Home.",
+    "vizio": "Paired! The box can see if the TV is on and go Home.",
+}
+REDISCOVER_EVERY = 60  # seconds: a TV that moved is looked for at most this often
+last_rediscover = {}
+
+
+class TVError(OSError):
+    pass
+
+
+def tv_kind(tv):
+    return (tv or {}).get("kind") or "roku"
+
+
+def helper_json(cmd, env=None, timeout=40):
+    """One of the helpers' one-shot commands: its last line of output (JSON)."""
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                             env={**os.environ, **(env or {})})
+    except subprocess.TimeoutExpired as e:
+        raise TVError("the TV didn't answer") from e
+    except OSError as e:  # the helper isn't installed
+        raise TVError(str(e)) from e
+    lines = out.stdout.strip().splitlines()
+    try:
+        data = json.loads(lines[-1]) if lines else None
+    except ValueError:
+        data = None
+    if out.returncode or data is None or (isinstance(data, dict) and "error" in data):
+        raise TVError(data["error"] if isinstance(data, dict) and "error" in data
+                      else (out.stderr.strip().splitlines() or ["no answer"])[-1])
+    return data
+
+
+def port_open(ip, port, timeout=1.5):
+    try:
+        socket.create_connection((ip, port), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+# Samsung (Tizen): REST on :8001 for the TV's info and apps, the remote-control
+# WebSocket (wss :8002 with a token the TV gives once Allow is pressed) for
+# buttons and deep links.
+
+def samsung_info(ip):
+    return json.loads(fetch(f"http://{ip}:8001/api/v2/", timeout=3))
+
+
+def samsung_describe(ip):
+    tv = {"kind": "samsung", "ip": ip, "serial": ip, "name": "Samsung TV", "location": "", "power": "PowerOff"}
+    try:
+        info = samsung_info(ip)
+    except (OSError, ValueError):
+        return tv
+    device = info.get("device") or {}
+    tv.update(serial=str(device.get("id") or info.get("id") or ip).removeprefix("uuid:"),
+              name=f"Samsung {device.get('modelName') or 'TV'}",
+              location=html.unescape(device.get("name") or info.get("name") or ""),
+              power="PowerOn" if device.get("PowerState", "on") == "on" else "PowerOff")
+    return tv
+
+
+def samsung_ws(tv, wait=10):
+    """The TV's remote-control WebSocket: (socket, token). A new client is asked
+    about on the TV (Allow); the token it then gives is kept."""
+    name = base64.b64encode(b"Kids OS").decode()
+    token = tv.get("token")
+    urls = [f"wss://{tv['ip']}:8002/api/v2/channels/samsung.remote.control?name={name}"
+            + (f"&token={token}" if token else ""),
+            f"ws://{tv['ip']}:8001/api/v2/channels/samsung.remote.control?name={name}"]  # older TVs
+    last = None
+    for url in urls:
+        try:
+            ws = WebSocket(url, timeout=5)
+        except OSError as e:
+            last = e
+            continue
+        end = time.time() + wait
+        try:
+            while True:
+                msg = json.loads(ws.recv(max(0.5, end - time.time())))
+                event = msg.get("event")
+                if event == "ms.channel.connect":
+                    return ws, (msg.get("data") or {}).get("token") or token
+                if event in ("ms.channel.unauthorized", "ms.channel.timeOut"):
+                    raise TVError("the TV said no (choose it again and press Allow)")
+                if time.time() > end:
+                    raise TVError("the TV didn't answer (press Allow on the TV)")
+        except (OSError, ValueError) as e:
+            ws.close()
+            raise e if isinstance(e, TVError) else TVError(f"the TV didn't let us in ({e!r})")
+    raise TVError(f"no remote control on the TV ({last!r})")
+
+
+def samsung_pair(ip):
+    try:
+        ws, token = samsung_ws({"ip": ip}, wait=30)
+    except TVError as e:
+        raise ValueError(f"Pairing with the TV didn't finish: {e}.")
+    ws.close()
+    return token
+
+
+def samsung_send(tv, *messages):
+    ws, _ = samsung_ws(tv)
+    try:
+        for message in messages:
+            ws.send(json.dumps(message))
+            time.sleep(0.4)
+    finally:
+        ws.close()
+
+
+def samsung_key(tv, key):
+    samsung_send(tv, {"method": "ms.remote.control", "params": {
+        "Cmd": "Click", "DataOfCmd": key, "Option": "false", "TypeOfRemote": "SendRemoteKey"}})
+
+
+def samsung_deep_link(tv, apps, meta):
+    """Opens the first of the apps the TV has, at the title (its metaTag)."""
+    ws, _ = samsung_ws(tv)
+    try:
+        for app in apps:
+            ws.send(json.dumps({"method": "ms.channel.emit", "params": {
+                "event": "ed.apps.launch", "to": "host",
+                "data": {"appId": app, "action_type": "DEEP_LINK", "metaTag": meta}}}))
+            end = time.time() + 6
+            while True:
+                try:
+                    msg = json.loads(ws.recv(max(0.5, end - time.time())))
+                except (socket.timeout, ValueError):
+                    return app  # no answer (some TVs don't say): take it as opened
+                if msg.get("event") == "ed.apps.launch":
+                    if str(msg.get("data")) == "200":
+                        return app
+                    break  # not this app id: the next one
+                if time.time() > end:
+                    return app
+        raise TVError("the app isn't on the TV")
+    finally:
+        ws.close()
+
+
+def samsung_now(tv):
+    for name, apps in (("Netflix", SAMSUNG_NETFLIX_APPS), ("YouTube", (SAMSUNG_YOUTUBE_APP,))):
+        for app in apps:
+            try:
+                if json.loads(fetch(f"http://{tv['ip']}:8001/api/v2/applications/{app}", timeout=3)).get("visible"):
+                    return name, None
+            except (OSError, ValueError):
+                pass
+    return None, None
+
+
+# Fire TV: ADB over the network (Settings -> My Fire TV -> Developer options ->
+# ADB debugging; the first connection is allowed on the TV). Its own adb
+# server, keys in the bridge's state directory.
+
+def adb_run(*args, timeout=15):
+    env = {**os.environ, "HOME": str(STATE), "ANDROID_ADB_SERVER_PORT": "5039"}
+    try:
+        return subprocess.run([ADB, *args], capture_output=True, text=True, timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise TVError(f"adb: {e}") from e
+
+
+def firetv_shell(ip, command, timeout=15):
+    serial = f"{ip}:5555"
+    adb_run("connect", serial, timeout=10)
+    out = adb_run("-s", serial, "shell", command, timeout=timeout)
+    err = (out.stderr or "").strip()
+    if "unauthorized" in err:
+        raise TVError("the TV hasn't allowed this box (choose it again and allow it on the TV)")
+    if out.returncode:
+        raise TVError(err or "the TV didn't answer")
+    return out.stdout
+
+
+def firetv_pair(ip, wait=60):
+    """Connects (the TV asks to allow it: tick "Always allow") and waits until allowed."""
+    serial = f"{ip}:5555"
+    end = time.time() + wait
+    while time.time() < end:
+        try:
+            adb_run("connect", serial, timeout=10)
+            if adb_run("-s", serial, "get-state", timeout=5).stdout.strip() == "device":
+                return True
+        except TVError:
+            pass
+        time.sleep(2)
+    raise ValueError("The TV didn't allow the connection. Turn on ADB debugging (Settings, My Fire TV, "
+                     "Developer options), choose the TV again, and allow it on the TV.")
+
+
+def firetv_launch(ip, package):
+    for category in ("android.intent.category.LEANBACK_LAUNCHER", "android.intent.category.LAUNCHER"):
+        if "No activities found" not in firetv_shell(ip, f"monkey -p {package} -c {category} 1"):
+            return
+    raise TVError(f"{package} isn't on the TV")
+
+
+def firetv_view(ip, url, component=None, extra=""):
+    out = firetv_shell(ip, "am start -a android.intent.action.VIEW" + (f" -n {component}" if component else "")
+                       + f" -d {shlex.quote(url)} {extra}")
+    if "Error" in out:
+        raise TVError(out.strip().splitlines()[-1])
+
+
+def firetv_app(ip):
+    found = re.search(r"u0 ([\w.]+)/", firetv_shell(ip, "dumpsys window | grep -m1 mCurrentFocus"))
+    return found[1] if found else None
+
+
+def firetv_state(ip):
+    """"play", "pause" or "buffer" from Android's media sessions; None otherwise."""
+    try:
+        states = re.findall(r"state=PlaybackState \{state=(\d+)", firetv_shell(ip, "dumpsys media_session"))
+    except TVError:
+        return None
+    for code, name in (("3", "play"), ("6", "buffer"), ("2", "pause")):
+        if code in states:
+            return name
+    return None
+
+
+# Cast, the Android TV remote, Vizio SmartCast and Apple TV go through the helpers.
+
+def cast_json(*args, timeout=40):
+    return helper_json([CAST, *args], timeout=timeout)
+
+
+def remote_json(tv, *args):
+    return helper_json([CAST, "remote", tv["ip"], *args], timeout=30)
+
+
+def vizio_json(tv, *args):
+    return helper_json([CAST, "vizio", tv["ip"], *args], env={"TABLET_VIZIO_TOKEN": tv["vizio"]}, timeout=20)
+
+
+def atv_json(tv, *args):
+    env = {"TABLET_AIRPLAY_MODE": "classic", "TABLET_AIRPLAY_CREDENTIALS": tv.get("airplay") or "",
+           "TABLET_COMPANION_CREDENTIALS": tv.get("companion") or ""}
+    return helper_json([AIRPLAY, "atv", tv["ip"], *args], env=env, timeout=40)
+
+
+def cast_describe(c):
+    ip = c["ip"]
+    vizio = "vizio" in (c.get("manufacturer") or "").lower() or port_open(ip, 7345, 1) or port_open(ip, 9000, 1)
+    kind = "vizio" if vizio else "googletv" if c.get("android_tv") else "cast"
+    return {"kind": kind, "ip": ip, "serial": c.get("uuid") or ip, "location": c.get("name") or "",
+            "name": f"{TV_LABELS[kind]} ({c.get('model') or 'Cast'})", "power": "PowerOn"}
+
+
+def dial_describe(ip, location):
+    """A Fire TV found by DIAL (other DIAL devices: None)."""
+    try:
+        xml = fetch(location, timeout=3)
+    except OSError:
+        return None
+    tag = lambda k: html.unescape((re.search(f"<{k}>(.*?)</{k}>", xml, re.S) or [None, ""])[1].strip())
+    if "amazon" not in tag("manufacturer").lower():
+        return None
+    return {"kind": "firetv", "ip": ip, "serial": tag("UDN").removeprefix("uuid:") or ip,
+            "name": f"Fire TV ({tag('modelName') or 'Amazon'})", "location": tag("friendlyName"),
+            "power": "PowerOn"}
+
+
+def discover_other(found_ips, samsung, dial, cast_found, airplay_found):
+    """The other kinds' TVs from discovery, leaving out addresses already found."""
+    seen, tvs = set(found_ips), []
+    for ip in sorted(samsung):
+        if ip not in seen:
+            seen.add(ip)
+            tvs.append(samsung_describe(ip))
+    for c in cast_found:
+        if c.get("ip") and c["ip"] not in seen:
+            seen.add(c["ip"])
+            tvs.append(cast_describe(c))
+    for a in airplay_found:
+        if a.get("apple_tv") and a.get("ip") not in seen:
+            seen.add(a["ip"])
+            tvs.append({"kind": "appletv", "ip": a["ip"], "serial": a.get("identifier") or a["ip"],
+                        "name": f"Apple TV ({a.get('model') or 'tvOS'})", "location": a.get("name") or "",
+                        "power": "PowerOn"})
+    for ip, location in sorted(dial.items()):
+        if ip not in seen and location:
+            tv = dial_describe(ip, location)
+            if tv:
+                seen.add(ip)
+                tvs.append(tv)
+    return tvs
+
+
+def other_power(tv):
+    """"PowerOn" / "PowerOff", "NotPaired" (a Fire TV that hasn't allowed the box), or None."""
+    kind, ip = tv["kind"], tv["ip"]
+    try:
+        if kind == "samsung":
+            device = samsung_info(ip).get("device") or {}
+            return "PowerOn" if device.get("PowerState", "on") == "on" else "PowerOff"
+        if kind == "firetv":
+            return "PowerOn" if "Awake" in firetv_shell(ip, "dumpsys power | grep -m1 mWakefulness=") else "PowerOff"
+        if kind == "googletv" and tv.get("remote"):
+            return "PowerOn" if remote_json(tv, "state").get("on") else "PowerOff"
+        if kind == "vizio" and tv.get("vizio"):
+            return "PowerOn" if vizio_json(tv, "power").get("on") else "PowerOff"
+        if kind == "appletv" and tv.get("companion"):
+            return "PowerOn" if atv_json(tv, "power").get("on") else "PowerOff"
+    except OSError as e:
+        print(f"{TV_LABELS[kind]} TV at {ip}: {e}", flush=True)
+        if kind == "firetv" and "allowed" in str(e):
+            return "NotPaired"
+        if kind in ("samsung", "firetv"):
+            return None
+    # Not paired for its remote (or that failed): answering at all counts as on.
+    if kind in CAST_TVS:
+        return "PowerOn" if port_open(ip, 8009) else None
+    if kind == "appletv":
+        return "PowerOn" if port_open(ip, 7000) else None
+    return None
+
+
+def other_find(tv):
+    power = other_power(tv)
+    if power is None and time.time() - last_rediscover.get(tv["serial"], 0) > REDISCOVER_EVERY:
+        last_rediscover[tv["serial"]] = time.time()
+        moved = next((t for t in discover_tvs() if t.get("kind") == tv["kind"] and t["serial"] == tv["serial"]
+                      and t["ip"] != tv["ip"]), None)
+        if moved:
+            with lock:
+                fresh = load()
+                if (fresh.get("tv") or {}).get("serial") == tv["serial"]:
+                    fresh["tv"]["ip"] = moved["ip"]
+                    save(fresh)
+            tv = {**tv, "ip": moved["ip"]}
+            power = other_power(tv)
+    return {**tv, "power": power} if power else None
+
+
+def other_home(tv):
+    kind, ip = tv["kind"], tv["ip"]
+    if kind == "samsung":
+        samsung_key(tv, "KEY_HOME")
+    elif kind == "firetv":
+        firetv_shell(ip, "input keyevent KEYCODE_HOME")
+    elif kind == "appletv":
+        if not tv.get("companion"):
+            raise TVError("pair the Apple TV's remote first (web page, Settings, TV)")
+        atv_json(tv, "home")
+    else:
+        try:
+            cast_json("stop", ip)
+        except TVError as e:
+            print(f"Cast stop: {e}", flush=True)
+        if kind == "googletv" and tv.get("remote"):
+            remote_json(tv, "key", "HOME")
+        elif kind == "vizio" and tv.get("vizio"):
+            vizio_json(tv, "key", "HOME")
+
+
+def other_netflix(tv, nid):
+    """Netflix at the title (it may resume: no rewind here)."""
+    kind, ip, link = tv["kind"], tv["ip"], f"https://www.netflix.com/watch/{nid}"
+    if kind == "samsung":
+        samsung_deep_link(tv, SAMSUNG_NETFLIX_APPS, f"m={nid}&source_type=4")
+    elif kind == "firetv":
+        firetv_view(ip, link, "com.netflix.ninja/.MainActivity", "-e source 30")
+    elif kind == "googletv":
+        if not tv.get("remote"):
+            raise TVError("pair the TV's remote on the web page (Settings, TV) so Netflix can start")
+        remote_json(tv, "launch", link)
+    elif kind == "appletv":
+        if not tv.get("companion"):
+            raise TVError("pair the Apple TV's remote on the web page (Settings, TV) so Netflix can start")
+        atv_json(tv, "launch", link)
+    else:
+        raise TVError("this TV can only be sent videos over Cast, and Netflix can't be cast to it from here")
+
+
+def other_youtube(tv, ids):
+    """The first song in YouTube (over Cast: all of them, queued). True once it's started."""
+    kind, ip = tv["kind"], tv["ip"]
+    if kind in CAST_TVS:
+        return bool(cast_json("youtube", ip, *ids, timeout=70).get("playing"))
+    link = f"https://www.youtube.com/watch?v={ids[0]}"
+    if kind == "samsung":
+        samsung_deep_link(tv, (SAMSUNG_YOUTUBE_APP,), f"v={ids[0]}")
+    elif kind == "firetv":
+        firetv_view(ip, link)
+        wait_for(lambda: firetv_state(ip) == "play", 30)
+    elif kind == "appletv":
+        if not tv.get("companion"):
+            raise TVError("pair the Apple TV's remote first")
+        atv_json(tv, "launch", link)
+    return True
+
+
+def other_now(tv):
+    """(app on screen, "play"/"pause"/...) as far as the TV says."""
+    kind, ip = tv["kind"], tv["ip"]
+    try:
+        if kind in CAST_TVS:
+            s = cast_json("status", ip, timeout=25)
+            if not s.get("app") and kind == "googletv" and tv.get("remote"):
+                app = remote_json(tv, "state").get("app")
+                return ANDROID_TV_APPS.get(app, app), None
+            return s.get("app"), s.get("state")
+        if kind == "samsung":
+            return samsung_now(tv)
+        if kind == "firetv":
+            app = firetv_app(ip)
+            return ANDROID_TV_APPS.get(app, app), firetv_state(ip)
+        if kind == "appletv" and tv.get("companion"):
+            s = atv_json(tv, "state")
+            return s.get("app"), s.get("state")
+    except OSError as e:
+        print(f"{TV_LABELS[kind]} now: {e}", flush=True)
+    return None, None
+
+
+def other_volume(tv, change):
+    """Over Cast a level (0-100) and mute; otherwise volume buttons ({"step"}, {"mute": true})."""
+    kind, ip = tv["kind"], tv["ip"]
+    if kind in CAST_TVS:
+        if "level" in change:
+            level = change["level"]
+            if not isinstance(level, int) or not 0 <= level <= 100:
+                raise ValueError("volume must be 0 to 100")
+            cast_json("volume", ip, str(level))
+        if "mute" in change:
+            cast_json("volume", ip, "mute" if change["mute"] else "unmute")
+        s = cast_json("status", ip, timeout=25)
+        return {"ok": True, "kind": kind, "control": "level", "level": s.get("volume"), "muted": s.get("muted")}
+    step = max(-5, min(5, int(change.get("step") or 0)))
+    if kind == "samsung":
+        keys = (["KEY_MUTE"] if change.get("mute") else []) + ["KEY_VOLUP" if step > 0 else "KEY_VOLDOWN"] * abs(step)
+        if keys:
+            samsung_send(tv, *[{"method": "ms.remote.control", "params": {
+                "Cmd": "Click", "DataOfCmd": k, "Option": "false", "TypeOfRemote": "SendRemoteKey"}} for k in keys])
+    elif kind == "firetv":
+        keys = (["KEYCODE_VOLUME_MUTE"] if change.get("mute") else []) + \
+            ["KEYCODE_VOLUME_UP" if step > 0 else "KEYCODE_VOLUME_DOWN"] * abs(step)
+        for k in keys:
+            firetv_shell(ip, f"input keyevent {k}")
+    elif kind == "appletv" and tv.get("companion"):
+        for _ in range(abs(step)):
+            atv_json(tv, "volume", "up" if step > 0 else "down")
+    return {"ok": True, "kind": kind, "control": "buttons", "mute": kind != "appletv"}
+
+
+def tv_player(tv, url):
+    """How the bridge's own stream (Plex, Jellyfin) gets onto this TV: the
+    helper command that plays and follows it, and its environment; None if
+    it can't (not paired, or a kind that uses its own app)."""
+    kind, ip = tv_kind(tv), (tv or {}).get("ip")
+    if kind in CAST_TVS:
+        return [CAST, "play", ip, url], {}
+    if kind in ("lg", "samsung", "appletv") and tv.get("airplay"):
+        return [AIRPLAY, "play", ip, url], {"TABLET_AIRPLAY_CREDENTIALS": tv["airplay"],
+                                            "TABLET_AIRPLAY_MODE": "classic" if kind == "appletv" else "v2"}
+    return None
+
+
+def plex_from_start(is_playing, send):
+    """Plex can resume despite the reset, and these TVs don't say where it is,
+    so once it plays, jump to the start (a few seconds in, it's no harm)."""
+    if wait_for(is_playing, 40):
+        time.sleep(2)
+        try:
+            send("seekTo", {"type": "video", "offset": 0})
+        except OSError as e:
+            print(f"Plex seek to start: {e!r}", flush=True)
+
+
+def firetv_plex_start(cfg, item, key, tv):
+    """Plex on a Fire TV: its app, started over (like the Roku and the LG),
+    the highlighted profile picked, then a Companion playMedia."""
+    ip = tv["ip"]
+    try:
+        firetv_shell(ip, f"am force-stop {FIRETV_PLEX}")
+        time.sleep(1)
+        firetv_launch(ip, FIRETV_PLEX)
+    except TVError as e:
+        print(f"Fire TV Plex: {e}", flush=True)
+        return {"result": "plex_closed", "message": "Plex isn't on the TV."}
+    time.sleep(12)  # until "Who's watching?" is up
+    if firetv_state(ip) not in ("play", "pause", "buffer"):
+        firetv_shell(ip, "input keyevent KEYCODE_DPAD_CENTER")  # the highlighted (last-used) profile
+    time.sleep(6)
+    player = lg_plex_player(cfg, ip)
+    if not player:
+        return {"result": "plex_closed", "message": "Plex on the TV can't be reached."}
+    send = player[1]
+    params = plex_play_params(cfg, item, key)
+    for attempt in range(2):
+        send("playMedia", params)
+        if wait_for(lambda: firetv_state(ip) in ("play", "buffer"), 20):
+            break
+        print("Fire TV: not playing 20s after asking; asking again", flush=True)
+    else:
+        return {"result": "error", "message": "The TV didn't start it."}
+    threading.Thread(target=plex_from_start, args=(lambda: firetv_state(ip) == "play", send), daemon=True).start()
+    return {"result": "playing", "message": "It's playing on the TV!"}
+
+
+def other_start(cfg, item, key, tv):
+    kind = tv["kind"]
+    if item.get("kind") == "netflix":
+        try:
+            other_netflix(tv, key[2:])
+        except TVError as e:
+            print(f"{TV_LABELS[kind]} Netflix: {e}", flush=True)
+            return {"result": "error", "message": f"Netflix didn't start: {e}."}
+        return {"result": "playing", "message": "It's starting on the TV!"}
+    if tv_player(tv, ""):
+        return airplay_start(cfg, item, key, tv)  # Plex and Jellyfin alike
+    if kind == "firetv":
+        return jellyfin_tv_start(cfg, item, key, tv) if is_jf(key) else firetv_plex_start(cfg, item, key, tv)
+    if is_jf(key):
+        return jellyfin_tv_start(cfg, item, key, tv)  # the TV's own Jellyfin app, if it's open
+    return {"result": "error", "message": "Pair AirPlay with the TV first (web page, Settings, TV)."}
+
+
+def other_start_dance(tv, queue):
+    try:
+        started = other_youtube(tv, [song["id"] for song in queue])
+    except TVError as e:
+        print(f"{TV_LABELS[tv['kind']]} YouTube: {e}", flush=True)
+        return {"result": "error", "message": "YouTube isn't on the TV."}
+    if not started:
+        return {"result": "error", "message": "The TV didn't start it."}
+    if len(queue) > 1 and tv["kind"] not in CAST_TVS:
+        print(f"{TV_LABELS[tv['kind']]}: dance party plays the first song, then YouTube's autoplay", flush=True)
+    return {"result": "playing", "message": "Let's dance!"}
+
+
+def other_check(cfg):
+    """--check's steps for these TVs."""
+    tv = cfg["tv"]
+    kind = tv["kind"]
+    found = lambda: find_tv(cfg) or tv
+    player = tv_player(tv, "")
+    return [
+        (f"{TV_LABELS[kind]}: on screen now", lambda: str(other_now(found()))),
+        ("Plex/Jellyfin on the TV", lambda: (
+            ("streamed over Cast" if player[0][0] == CAST else "streamed over AirPlay") if player
+            else "the TV's own Plex/Jellyfin app (Fire TV)" if kind == "firetv"
+            else None)),
+        ("pairings", lambda: ", ".join(f"{p}: {'yes' if tv.get(p) else 'no'}"
+                                       for p in TV_PAIRINGS.get(kind, ())) or "none needed"),
+        ("helper", lambda: ("adb " if kind == "firetv" else "") + ("ok" if os.access(
+            ADB if kind == "firetv" else CAST if kind in CAST_TVS else AIRPLAY, os.X_OK) else None)),
+    ]
+
+
+def tv_cli(args):
+    """Testing the other kinds (run as tablet-movies):
+         --tv discover            every TV the box can find (all kinds)
+         --tv status              the chosen TV: power, what's on, pairings
+         --tv pair <airplay|companion|remote|vizio>   type the code the TV shows
+         --tv stop                its home screen"""
+    command = args[0] if args else "status"
+    if command == "discover":
+        for tv in discover_tvs():
+            print(json.dumps(tv))
+        return 0
+    cfg = load()
+    tv = cfg.get("tv")
+    if not tv:
+        print("no TV chosen")
+        return 1
+    if command == "pair" and len(args) > 1:
+        cmd, env = pair_command(tv, args[1])
+        out = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, env={**os.environ, **env})
+        credentials = out.stdout.strip()
+        if out.returncode or not credentials:
+            return out.returncode or 1
+        with lock:
+            cfg = load()
+            cfg["tv"][args[1]] = credentials.splitlines()[-1]
+            save(cfg)
+        print(PAIRED_MESSAGES[args[1]])
+        return 0
+    if command == "stop":
+        print(tv_stop())
+        return 0
+    found = find_tv(cfg)
+    print(json.dumps({"tv": public_tv(found or tv), "now": tv_now()["tv"]}, indent=1))
+    return 0
+
+
 def check():
     """Every step of a play except the final command to the TV (nothing changes on screen)."""
     cfg = load()
@@ -3813,6 +4658,9 @@ def check():
             ("Jellyfin answers as that user", lambda: f"{len(jellyfin_library(cfg, ''))} movies and shows"),
             ("Jellyfin titles on the list", lambda: len(jf_items) or "none yet"),
         ]
+    if (cfg.get("tv") or {}).get("kind") in OTHER_TVS:
+        steps = [s for s in steps if s[0] not in ("Plex open on the TV", "Netflix on the TV")]
+        steps += other_check(cfg)
     if (cfg.get("tv") or {}).get("kind") == "lg":
         steps = [s for s in steps if s[0] not in ("Plex open on the TV", "Netflix on the TV")]
         steps.append(("LG TV apps", lambda: lg_apps(cfg["tv"])))
@@ -3858,6 +4706,8 @@ def main():
         raise SystemExit(0)
     if "--lg" in sys.argv:
         raise SystemExit(lg_cli(sys.argv[sys.argv.index("--lg") + 1:]))
+    if "--tv" in sys.argv:
+        raise SystemExit(tv_cli(sys.argv[sys.argv.index("--tv") + 1:]))
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     threading.Thread(target=seed_dance, daemon=True).start()
     threading.Thread(target=count_usage, daemon=True).start()

@@ -402,7 +402,26 @@
         <div class="buttons" id="jfUnlinkRow" hidden><button id="jfUnlinkBtn">Unlink</button></div>
         <p class="msg">Using Jellyfin instead of (or as well as) Plex? Link the kids' own Jellyfin user, so its
           parental controls decide what you can add. Only a sign-in token is kept, not the password. Titles play on
-          the tablet, on an LG over AirPlay, or in the TV's Jellyfin app (signed in as the same user).</p>
+          the tablet, on the TV over AirPlay or Cast, or in the TV's own Jellyfin app (Roku, Fire TV: signed in as
+          the same user).</p>
+      </section>
+
+      <section class="card">
+        <h2>🖼️ Posters</h2>
+        <div id="postersState" class="state info"><span class="icon">🖼️</span><div>Checking…</div></div>
+        <div class="search">
+          <input id="tmdbKey" placeholder="TMDB API key (or read access token)" autocomplete="off" autocapitalize="none" aria-label="TMDB key">
+          <button class="primary" id="tmdbBtn">Save</button>
+        </div>
+        <div class="search">
+          <input id="omdbKey" placeholder="OMDb API key" autocomplete="off" autocapitalize="none" aria-label="OMDb key">
+          <button class="primary" id="omdbBtn">Save</button>
+        </div>
+        <div class="buttons"><button id="tmdbClearBtn" hidden>Remove the TMDB key</button><button id="omdbClearBtn" hidden>Remove the OMDb key</button></div>
+        <p class="msg">Optional. Plex and Jellyfin give their own posters; these fill the gaps: Netflix titles, and
+          titles a server has no poster for. Both keys are free: TMDB's from themoviedb.org (your account's
+          Settings, API), OMDb's from omdbapi.com. TMDB is tried first. Keys stay on the box.
+          This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
       </section>
 
       <section class="card">
@@ -410,17 +429,20 @@
         <div id="tvChosen" class="state info"><span class="icon">📺</span><div>Checking…</div></div>
         <div class="buttons"><button id="findTvsBtn">🔍 Find TVs</button></div>
         <div id="tvList"></div>
+        <p class="msg" id="tvNote" hidden></p>
         <div id="airplayBox" hidden>
-          <h3>AirPlay (Plex and Jellyfin on an LG)</h3>
-          <p class="msg" id="airplayMsg" style="margin:0 0 8px"></p>
-          <div class="buttons" id="airplayStartRow"><button id="airplayBtn">📡 Pair AirPlay</button></div>
+          <h3>Pairing</h3>
+          <div id="airplayMsg"></div>
+          <div class="buttons" id="airplayStartRow"></div>
           <div class="search" id="airplayPinRow" hidden>
-            <input id="airplayPin" inputmode="numeric" maxlength="8" placeholder="PIN on the TV" aria-label="AirPlay PIN">
+            <input id="airplayPin" maxlength="8" autocomplete="off" autocapitalize="characters" placeholder="Code on the TV" aria-label="Pairing code">
             <button class="primary" id="airplayPinBtn">Pair</button>
           </div>
         </div>
-        <p class="msg">The TV must be on and on the home Wi-Fi. Choosing an LG shows a prompt on the TV: press
-          Accept there within a minute.</p>
+        <p class="msg">The TV must be on and on the home Wi-Fi. Choosing an LG or a Samsung shows a prompt on the
+          TV: press Accept (or Allow) there within a minute. A Fire TV needs ADB debugging on (Settings, My Fire TV,
+          Developer options) and asks to allow the box. Roku and LG are tested; the other kinds are built but
+          haven't been tried on a real TV yet.</p>
       </section>
 
       <section class="card">
@@ -533,7 +555,7 @@ function go(name) {
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
   window.scrollTo(0, 0);
   if (name === "activity") { loadWeek().catch(() => {}); loadHistory().catch(() => {}); }
-  if (name === "settings") { loadSchedule().catch(() => {}); loadSystem().catch(() => {}); loadTvSetup().catch(() => {}); loadJellyfin().catch(() => {}); loadPlex().catch(() => {}); }
+  if (name === "settings") { loadSchedule().catch(() => {}); loadSystem().catch(() => {}); loadTvSetup().catch(() => {}); loadJellyfin().catch(() => {}); loadPlex().catch(() => {}); loadPosters().catch(() => {}); }
   if (name === "lists") showTab(currentTab);
 }
 document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => { e.preventDefault(); go(b.dataset.go); });
@@ -702,8 +724,9 @@ $("vol").addEventListener("change", async () => {
 const KIND_NAMES = {plex: "Plex & Jellyfin", netflix: "Netflix", youtube: "YouTube"};
 let tvVolBusy = false;
 function showTvVolume(r) {
-  const lg = r.ok && r.kind === "lg", roku = r.ok && r.kind === "roku";
-  $("tvVolLg").hidden = !lg; $("tvVolRoku").hidden = !roku; $("tvLevels").hidden = !lg;
+  const lg = r.ok && (r.control === "level" || r.kind === "lg"), roku = r.ok && !lg;
+  $("tvVolLg").hidden = !lg; $("tvVolRoku").hidden = !roku; $("tvLevels").hidden = !(r.ok && r.kind === "lg");
+  $("tvRokuMuteBtn").hidden = r.mute === false;
   if (lg) {
     if (!tvVolBusy && Number.isInteger(r.level)) $("tvVol").value = r.level;
     $("tvVolText").textContent = r.muted ? "🔇" : (Number.isInteger(r.level) ? r.level : "–");
@@ -711,7 +734,8 @@ function showTvVolume(r) {
     $("tvMuteBtn").dataset.muted = r.muted ? "1" : "";
     const out = r.output && r.output !== "tv_speaker" ? " The sound goes to " + r.output.replace(/_/g, " ") + ", which may keep its own volume." : "";
     $("tvVolMsg").textContent = (r.playing ? "Now: " + KIND_NAMES[r.playing] + ". " : "") + out;
-  } else if (roku) $("tvVolMsg").textContent = "A Roku only has volume buttons (it can't say how loud it is).";
+  } else if (roku) $("tvVolMsg").textContent = r.kind === "roku" ? "A Roku only has volume buttons (it can't say how loud it is)."
+    : "This TV only takes volume buttons from here (it can't say how loud it is).";
   else $("tvVolMsg").textContent = r.message || "The TV isn't answering.";
 }
 async function loadTvVolume() {
@@ -756,14 +780,39 @@ $("levelsOn").addEventListener("change", async () => {
 });
 
 // ---- choosing the TV (Settings) -----------------------------------------------------------------
+const tvLabel = (tv) => tv.label || (tv.kind === "lg" ? "LG" : "Roku");
+const TESTED_TVS = ["roku", "lg", undefined, null, ""];
+const PAIRINGS = {
+  airplay: {button: "📡 Pair AirPlay", name: "AirPlay", why: "Plex and Jellyfin titles play on the TV over AirPlay."},
+  companion: {button: "🎛️ Pair the remote", name: "Remote", why: "The box can open Netflix and YouTube on the Apple TV, and go Home."},
+  remote: {button: "🎛️ Pair the remote", name: "Remote", why: "The box can open Netflix, see if the TV is on, and go Home."},
+  vizio: {button: "🎛️ Pair SmartCast", name: "SmartCast", why: "The box can see if the TV is on, and go Home."},
+};
+let pairWhat = "airplay";
 function showChosenTv(tv) {
+  const pairings = (tv && tv.pairings) || {};
   if (!tv) state($("tvChosen"), "info", "📺", "No TV yet", "Find TVs below and choose one.");
   else state($("tvChosen"), "on", "📺", tv.location || tv.name || "TV",
-             (tv.kind === "lg" ? "LG" : "Roku") + (tv.kind === "lg" ? (tv.airplay_paired ? " · AirPlay paired" : " · AirPlay not paired") : "") + " · " + tv.ip);
-  $("airplayBox").hidden = !tv || tv.kind !== "lg";
-  if (tv && tv.kind === "lg") $("airplayMsg").textContent = tv.airplay_paired
-    ? "Paired: Plex and Jellyfin titles play on this TV over AirPlay. Pair again if the TV was reset."
-    : "Plex (and Jellyfin) play on an LG over AirPlay. Pair once: the TV shows a PIN to type here.";
+             [tvLabel(tv), ...Object.entries(pairings).map(([w, ok]) => PAIRINGS[w].name + (ok ? " paired" : " not paired")), tv.ip].join(" · "));
+  $("tvNote").hidden = !tv || TESTED_TVS.includes(tv.kind);
+  if (tv) $("tvNote").textContent = "Support for " + tvLabel(tv) + " TVs is built, but hasn't been tried on a real one yet.";
+  $("airplayBox").hidden = !Object.keys(pairings).length;
+  $("airplayMsg").replaceChildren(...Object.entries(pairings).map(([w, ok]) =>
+    el("p", "msg", (ok ? "✓ " : "") + PAIRINGS[w].name + ": " + PAIRINGS[w].why + (ok ? " Pair again if the TV was reset." : " Pair once: the TV shows a code to type here."))));
+  $("airplayStartRow").replaceChildren(...Object.keys(pairings).map((w) => {
+    const b = el("button", "", PAIRINGS[w].button);
+    b.onclick = () => busy(b, async () => {
+      pairWhat = w;
+      $("airplayPinRow").hidden = true;
+      toast("Asking the TV… (a code appears on it in a few seconds)");
+      const r = await api("POST", "airplay-pair", {what: w});
+      const ok = r.result === "pin";
+      toast(r.message, !ok);
+      $("airplayPinRow").hidden = !ok; $("airplayStartRow").hidden = ok;
+      if (ok) $("airplayPin").focus();
+    });
+    return b;
+  }));
 }
 async function loadTvSetup() {
   const r = await api("GET", "setup-tv");
@@ -833,6 +882,26 @@ function showJellyfin(r) {
   $("jfForm").hidden = r.linked; $("jfUnlinkRow").hidden = !r.linked;
 }
 async function loadJellyfin() { showJellyfin(await api("GET", "jellyfin")); }
+
+// ---- posters: TMDB and OMDb keys (Settings) ---------------------------------------------------
+function showPosters(r) {
+  const on = [r.tmdb && "TMDB", r.omdb && "OMDb"].filter(Boolean);
+  if (on.length) state($("postersState"), "on", "🖼️", "Using " + on.join(" and "), "Netflix titles, and titles with no poster, get one from there.");
+  else state($("postersState"), "info", "🖼️", "Not set up", "Netflix movies get a poster made from their wide picture.");
+  $("tmdbClearBtn").hidden = !r.tmdb; $("omdbClearBtn").hidden = !r.omdb;
+}
+async function loadPosters() { showPosters(await api("GET", "posters")); }
+for (const src of ["tmdb", "omdb"]) {
+  $(src + "Btn").onclick = () => busy($(src + "Btn"), async () => {
+    const key = $(src + "Key").value.trim();
+    if (!key) return;
+    try { showPosters(await api("POST", "posters", {[src]: key})); $(src + "Key").value = ""; toast("Key saved ✓"); }
+    catch (e) { oops(e); }
+  });
+  $(src + "ClearBtn").onclick = () => busy($(src + "ClearBtn"), async () => {
+    showPosters(await api("POST", "posters", {[src]: null})); toast("Removed");
+  });
+}
 $("jfForm").onsubmit = (e) => {
   e.preventDefault();
   busy($("jfBtn"), async () => {
@@ -855,7 +924,9 @@ $("findTvsBtn").onclick = () => busy($("findTvsBtn"), async () => {
     const chosen = r.chosen && r.chosen.serial === tv.serial;
     const b = el("button", chosen ? "added" : "primary", chosen ? "✓ Chosen" : "Use this");
     b.onclick = () => busy(b, async () => {
-      if (tv.kind === "lg") toast("Press Accept on the TV 📺");
+      const prompt = {lg: "Press Accept on the TV 📺", samsung: "Press Allow on the TV 📺",
+                      firetv: "Allow the connection on the TV 📺 (tick Always allow)"}[tv.kind];
+      if (prompt) toast(prompt);
       const c = await api("POST", "tv/" + encodeURIComponent(tv.serial));
       showChosenTv(c.tv);
       toast("TV chosen ✓");
@@ -864,16 +935,8 @@ $("findTvsBtn").onclick = () => busy($("findTvsBtn"), async () => {
     });
     const off = tv.power && tv.power !== "PowerOn" ? " · off" : "";
     return listRow(null, false, (tv.location || tv.name) + (tv.location && tv.name ? " (" + tv.name + ")" : ""),
-                   (tv.kind === "lg" ? "LG" : "Roku") + " · " + tv.ip + off, b);
+                   tvLabel(tv) + " · " + tv.ip + off, b);
   }));
-});
-$("airplayBtn").onclick = () => busy($("airplayBtn"), async () => {
-  $("airplayMsg").textContent = "Asking the TV… (a PIN appears on it in a few seconds)";
-  const r = await api("POST", "airplay-pair", {});
-  $("airplayMsg").textContent = r.message;
-  const ok = r.result === "pin";
-  $("airplayPinRow").hidden = !ok; $("airplayStartRow").hidden = ok;
-  if (ok) $("airplayPin").focus();
 });
 $("airplayPinBtn").onclick = () => busy($("airplayPinBtn"), async () => {
   let r;
@@ -882,7 +945,6 @@ $("airplayPinBtn").onclick = () => busy($("airplayPinBtn"), async () => {
   $("airplayPinRow").hidden = true; $("airplayStartRow").hidden = false;
   toast(r.message, r.result !== "paired");
   await loadTvSetup();
-  if (r.result !== "paired") $("airplayMsg").textContent = r.message;
 });
 $("airplayPin").addEventListener("keydown", (e) => { if (e.key === "Enter") $("airplayPinBtn").click(); });
 

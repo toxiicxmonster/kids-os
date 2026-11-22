@@ -1,14 +1,22 @@
 #!/opt/kidsos-airplay/bin/python3
-"""Kids OS: play a video URL on an LG webOS TV over AirPlay (the bridge's helper).
+"""Kids OS: play a video URL on a TV over AirPlay, and an Apple TV's remote (the bridge's helper).
 
-  tablet-airplay pair <ip>    starts pairing: the TV shows a PIN, type it here;
-                              prints the credentials (keep them secret)
+  tablet-airplay scan         AirPlay devices on the network (JSON: ip, name, apple_tv)
+  tablet-airplay pair <ip> [companion]
+                              starts pairing: the TV shows a PIN, type it here;
+                              prints the credentials (keep them secret). "companion"
+                              pairs an Apple TV's remote protocol (apps, Home, power)
   tablet-airplay play <ip> <url>
                               plays the URL; credentials in $TABLET_AIRPLAY_CREDENTIALS.
                               Prints one JSON line per change ({"state", "position",
                               "duration"}, finally {"end": "played"|"failed"|"stopped"});
                               exits when it ends. SIGTERM stops playback (the TV leaves
                               the player when the connection closes).
+                              $TABLET_AIRPLAY_MODE: "v2" (default: LG, Samsung) or
+                              "classic" (an Apple TV: pyatv's own POST /play)
+  tablet-airplay atv <ip> power|state|home|launch <url>|volume up|down
+                              an Apple TV over Companion ($TABLET_COMPANION_CREDENTIALS);
+                              prints JSON. (Apple TV support: not yet tried on a real one.)
 
 LG TVs only do AirPlay video "v2": POST /play is a 404 there. What works (as macOS
 does it): pyatv's usual pair-verify, SETUP, event channel, feedback and RECORD, then
@@ -69,7 +77,9 @@ def parse_request(data):
     return (request, *rest)
 
 
-EventChannel.parse_request = staticmethod(parse_request)
+MODE = os.environ.get("TABLET_AIRPLAY_MODE", "v2")
+if MODE == "v2":
+    EventChannel.parse_request = staticmethod(parse_request)
 
 
 async def play_url(self, timing_server_port, url, position=0.0):
@@ -133,8 +143,9 @@ async def wait_for_end(self):
     say(end="stopped", reason="connection closed")
 
 
-airplayv2.AirPlayV2.play_url = play_url
-airplay_player.AirPlayPlayer._wait_for_media_to_end = wait_for_end
+if MODE == "v2":
+    airplayv2.AirPlayV2.play_url = play_url
+    airplay_player.AirPlayPlayer._wait_for_media_to_end = wait_for_end
 
 
 async def find(ip):
@@ -142,15 +153,28 @@ async def find(ip):
     pyatv's unicast (hosts=) scan."""
     loop = asyncio.get_running_loop()
     for _ in range(2):
-        for conf in await pyatv.scan(loop, timeout=5, protocol=Protocol.AirPlay):
+        # (An Apple TV, "classic", needs its other services too: Companion.)
+        for conf in await pyatv.scan(loop, timeout=5, protocol=None if MODE == "classic" else Protocol.AirPlay):
             if str(conf.address) == ip and conf.get_service(Protocol.AirPlay):
                 return conf
     raise SystemExit(f"no AirPlay TV at {ip}")
 
 
-async def pair(ip):
+async def scan():
+    from pyatv.const import OperatingSystem
+    out = []
+    for conf in await pyatv.scan(asyncio.get_running_loop(), timeout=4):
+        if not conf.get_service(Protocol.AirPlay):
+            continue
+        info = conf.device_info
+        out.append({"ip": str(conf.address), "name": conf.name, "identifier": conf.identifier,
+                    "model": info.model_str, "apple_tv": info.operating_system == OperatingSystem.TvOS})
+    print(json.dumps(out), flush=True)
+
+
+async def pair(ip, protocol=Protocol.AirPlay):
     conf = await find(ip)
-    pairing = await pyatv.pair(conf, Protocol.AirPlay, asyncio.get_running_loop())
+    pairing = await pyatv.pair(conf, protocol, asyncio.get_running_loop())
     try:
         await pairing.begin()
         print("Type the PIN shown on the TV: ", end="", file=sys.stderr, flush=True)
@@ -176,7 +200,10 @@ async def play(ip, url):
     task = asyncio.current_task()
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
     try:
-        await atv.stream.play_url(url)
+        if MODE == "v2":
+            await atv.stream.play_url(url)
+        else:
+            await play_classic(atv, url)
     except asyncio.CancelledError:
         say(end="stopped", reason="asked to stop")
     except Exception as e:  # the bridge reads the reason
@@ -185,10 +212,84 @@ async def play(ip, url):
         atv.close()
 
 
+async def play_classic(atv, url):
+    """An Apple TV: pyatv's own play_url (returns when the video ends), with
+    what it's doing reported from its now-playing info meanwhile."""
+    task = asyncio.ensure_future(atv.stream.play_url(url))
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+    last, started = None, False
+    while not task.done():
+        await asyncio.wait([task], timeout=2)
+        try:
+            playing = await atv.metadata.playing()
+            state = {"Playing": "playing", "Paused": "paused", "Loading": "loading"}.get(
+                playing.device_state.name, "idle")
+            now = (state, playing.position, playing.total_time)
+        except Exception:  # no now-playing info: play_url still running counts as playing
+            now = ("playing" if loop.time() - began > 8 else "loading", None, None)
+        started |= now[0] == "playing"
+        if now != last:
+            say(state=now[0], position=now[1], duration=now[2])
+            last = now
+    task.result()  # (raises if it failed)
+    say(end="played" if started else "failed", reason="ended")
+
+
+async def atv_command(ip, command, arg=None):
+    from pyatv.const import PowerState
+    conf = await find(ip)
+    for protocol, env in ((Protocol.AirPlay, "TABLET_AIRPLAY_CREDENTIALS"),
+                          (Protocol.Companion, "TABLET_COMPANION_CREDENTIALS")):
+        if os.environ.get(env):
+            conf.set_credentials(protocol, os.environ[env])
+    atv = await pyatv.connect(conf, asyncio.get_running_loop())
+    try:
+        if command == "power":
+            print(json.dumps({"on": atv.power.power_state == PowerState.On}))
+        elif command == "state":
+            app = state = None
+            try:
+                app = atv.metadata.app.name if atv.metadata.app else None
+            except Exception:
+                pass
+            try:
+                state = {"Playing": "play", "Paused": "pause", "Loading": "buffer"}.get(
+                    (await atv.metadata.playing()).device_state.name)
+            except Exception:
+                pass
+            print(json.dumps({"app": app, "state": state}))
+        elif command == "home":
+            await atv.remote_control.home()
+            print(json.dumps({"ok": True}))
+        elif command == "launch":
+            await atv.apps.launch_app(arg)
+            print(json.dumps({"ok": True}))
+        elif command == "volume":
+            await (atv.audio.volume_up() if arg == "up" else atv.audio.volume_down())
+            print(json.dumps({"ok": True}))
+        else:
+            raise SystemExit(__doc__)
+    finally:
+        atv.close()
+
+
 def main():
     args = sys.argv[1:]
-    if len(args) == 2 and args[0] == "pair":
+    if args == ["scan"]:
+        asyncio.run(scan())
+    elif len(args) == 2 and args[0] == "pair":
         asyncio.run(pair(args[1]))
+    elif len(args) == 3 and args[0] == "pair" and args[2] == "companion":
+        asyncio.run(pair(args[1], Protocol.Companion))
+    elif len(args) >= 3 and args[0] == "atv":
+        try:
+            asyncio.run(atv_command(args[1], args[2], args[3] if len(args) > 3 else None))
+        except SystemExit:
+            raise
+        except Exception as e:  # the bridge reads the reason
+            print(json.dumps({"error": repr(e)[:300]}))
+            raise SystemExit(2)
     elif len(args) == 3 and args[0] == "play":
         asyncio.run(play(args[1], args[2]))
     else:
