@@ -138,6 +138,38 @@ gitignored.)
   Jellyfin poster get one made from their wide art (purple strip). Tested
   2026-11-21 on the dev VM against Jellyfin 12.4 (`apt` from
   repo.jellyfin.org, test media in `/srv/media`, user `kids`).
+- **Other TV kinds** (`OTHER_TVS`; Roku and LG are the tested ones): Samsung,
+  Google TV / Android TV (`googletv`), Chromecast / Cast built-in (`cast`),
+  Vizio, Fire TV, Apple TV. **Built from each platform's documented protocol,
+  never tried on a real TV of these kinds** (the README says so; 2026-11-21
+  tests: a fake Samsung on loopback, the VM's own Android over adb standing in
+  for a Fire TV, a read-only Cast status from the household LG, which also
+  answers Cast). Each kind has power / home / Netflix / YouTube / now / volume
+  (`other_*`); Plex and Jellyfin go out as the bridge's own HLS stream through
+  `tv_player()` (the same following as the LG's AirPlay, `airplay_start`):
+  Cast for googletv/cast/vizio (`tablet-cast play`, Default Media Receiver),
+  AirPlay v2 for Samsung (as the LG), classic AirPlay for an Apple TV
+  (`TABLET_AIRPLAY_MODE=classic`); a Fire TV uses its Plex app (Companion, as
+  the LG fallback) or Jellyfin app (remote control). Discovery adds SSDP
+  (Samsung `RemoteControlReceiver`, DIAL for Fire TV: description manufacturer
+  Amazon) and the helpers' mDNS scans (`tablet-cast discover`, `tablet-airplay
+  scan`), first match per IP wins in the order Roku, LG, Samsung, Cast, Apple
+  TV, Fire TV. Pairings after choosing (`TV_PAIRINGS`, web page two-step,
+  `pair_command`): `airplay`, `companion` (Apple TV), `remote` (Google TV's
+  remote protocol, androidtvremote2; certificate in
+  `/var/lib/tablet-movies/googletv`), `vizio` (SmartCast token). Samsung's token
+  (Allow on the TV) and a Fire TV's adb authorization happen when it's chosen.
+  adb runs its own server on port 5039 with keys under the bridge's state.
+  Helper venv `/opt/kidsos-cast` pins pychromecast 14.1.1 and
+  androidtvremote2 0.3.2. `--tv discover|status|pair <what>|stop` is the
+  on-box tester.
+- **Posters from TMDB and OMDb** (optional; the parents' own free keys in
+  `cfg["posters"]`, web page Settings): for Netflix titles and titles a server
+  has no poster for (`poster_lookup`: TMDB, then OMDb, closest name only, then
+  the old fallbacks: TVmaze for Netflix shows, the wide-art composite). Saving
+  a key re-fetches the cached Netflix and Jellyfin posters. TMDB's terms need
+  the "uses the TMDB API but is not endorsed" line (README, web page). IMDb has
+  no public API (and forbids scraping), so it isn't used.
 - **Loudness**: Plex is far quieter than YouTube (2026-11-20, ebur128 on the
   transcoder's output: a Bluey episode -32 LUFS, Despicable Me -18; YouTube
   Kids logs songs at -14 to -24). The transcoder's `audioBoost` changes

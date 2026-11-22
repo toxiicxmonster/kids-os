@@ -27,15 +27,18 @@ lands straight in their own Android; nothing else on the PC is reachable.
   most recently comes first. Kids pick their own background theme from 10
   cartoon themes: sky, space, sea, dinosaurs, trucks, princess, unicorn, fairy
   garden, mermaid and sweets. A floating home button leaves any app.
-- **Movies & TV**: a tap plays the title on the living-room TV, a **Roku** or an
-  **LG webOS** TV.
+- **Movies & TV**: a tap plays the title on the living-room TV: a **Roku** or an
+  **LG webOS** TV (both tested), or a **Samsung**, **Google TV / Android TV**,
+  **Chromecast**, **Vizio**, **Fire TV** or **Apple TV** (built, but not yet
+  tried on a real one: see [TVs](#tvs)).
   - Movies and shows come from **Plex** or **Jellyfin** (or both). They always
     start from the beginning, and shows go on to the next episode. On an LG,
     they play over AirPlay.
   - Netflix titles open by deep link, and are rewound to the start on a Roku if
     Netflix resumes partway in.
   - The kid's **favorites** (picked twice or more in the last month) come first.
-  - Netflix shows get proper portrait posters, from TVmaze.
+  - Netflix titles get proper portrait posters: from **TMDB** or **OMDb** if you
+    add a free key on the web page, otherwise TVmaze for shows.
 - **Watching on the tablet**: while the parents have paused movie time (or there
   is no TV), picks play on the tablet itself.
   - Plex and Jellyfin play in Movies & TV's own simple player: big 🏠 and ⏸/▶,
@@ -83,8 +86,9 @@ lands straight in their own Android; nothing else on the PC is reachable.
     - **Movie time**: pause the TV for a while, and the kids watch on the
       tablet instead.
     - **What's on the TV now**, with a Stop button.
-    - **TV volume**: a slider and mute on an LG, louder/quieter/mute buttons on
-      a Roku, plus the volume for each kind of video.
+    - **TV volume**: a slider and mute on an LG (or over Cast), louder, quieter
+      and mute buttons on the others, plus the volume for each kind of video
+      (LG).
     - **Tablet volume**.
   - **Lists**, per kid for Movies & TV and Dance, plus the shared **coloring
     pages**. Pages come from a search of Crayola's free coloring pages, or any
@@ -99,8 +103,11 @@ lands straight in their own Android; nothing else on the PC is reachable.
     - The **schedule**: allowed hours and a daily limit.
     - **Plex and Jellyfin**: link Plex (a plex.tv/link code) and choose the
       kids' profile, or link the kids' Jellyfin user.
-    - **The TV**: find TVs on the network, choose one (an LG asks you to press
-      Accept), and pair AirPlay with the PIN the TV shows.
+    - **Posters**: optional free TMDB and OMDb keys, for posters Plex and
+      Jellyfin don't have (Netflix titles, mostly).
+    - **The TV**: find TVs on the network, choose one (an LG or a Samsung asks
+      you to press Accept or Allow), and pair whatever that TV needs (AirPlay,
+      its remote) with the code it shows.
     - A health card: TV, Plex or Jellyfin, last update, disk, and the last
       automatic fix.
     - **Restart / shut down** the box.
@@ -132,17 +139,40 @@ artwork isn't ours to publish. The coloring pages shown are public domain
   drags turn into taps, add the panel's id to `/etc/tablet-os/touch-panels.conf`
   with the fix it needs (`as-touch`, `debounce`; the file explains both) and
   run `sudo ./install.sh 40`. `tablet-hardware-check --touch` finds both.
-- **Optional, a TV on the same network** for Movies & TV and Dance:
-  - **Roku**: Settings → System → Advanced system settings → Control by mobile apps
-    → Network access: **Default**.
-    In the Roku's Plex app, turn "Automatically sign in" off.
-  - **LG webOS**: General → Devices → External Devices: "TV On With Mobile" /
-    "LG Connect Apps" on. Plex and Jellyfin play over AirPlay, paired once from
-    the web page.
-  - **Jellyfin on the TV** (a Roku, or an LG not paired for AirPlay): install
-    the Jellyfin app and sign it in as the same Jellyfin user as the box.
+- **Optional, a TV on the same network** for Movies & TV and Dance. See
+  [TVs](#tvs) for which kinds work and what each one needs.
 - **Optional sources**: a **Plex** or **Jellyfin** server (or both), Netflix
   and YouTube on the TV, and YouTube Kids on the tablet for songs.
+
+## TVs
+
+Kids OS finds the TV on the home network and sends it the kid's picks.
+**Only Roku and LG have been tested on real TVs.** Support for the other kinds
+is built from each platform's own documented protocol and tested against
+stand-ins (a fake Samsung, an Android device over adb), **but it has not been
+tried on a real TV of those kinds yet.** If you try one, please open an issue
+saying what worked.
+
+| TV | Tested | Plex & Jellyfin | Netflix | Dance (YouTube) | Setup on the TV |
+| --- | --- | --- | --- | --- | --- |
+| **Roku** (TCL, Hisense, … Roku TVs) | ✅ yes | the TV's Plex or Jellyfin app | ✅, rewound to the start | ✅ every song in a party | Settings → System → Advanced system settings → Control by mobile apps → Network access: **Default**. In Plex, "Automatically sign in" off. |
+| **LG webOS** | ✅ yes | AirPlay (paired once) | ✅ | first song, then autoplay | General → Devices → External Devices: "TV On With Mobile" / "LG Connect Apps" on. |
+| **Samsung** (Tizen) | ⚠️ not yet | AirPlay (2018 and later; paired once) | ✅ deep link | first song | Press **Allow** when it asks. |
+| **Google TV / Android TV** (Sony, TCL, Hisense, Philips, Chromecast with Google TV) | ⚠️ not yet | Cast | ✅ after pairing its remote | ✅ every song (Cast queue) | Pair its remote on the web page (a code on the TV). |
+| **Chromecast** / Cast built-in | ⚠️ not yet | Cast | ❌ (Netflix can't be cast from here) | ✅ every song | Nothing. |
+| **Vizio** (SmartCast) | ⚠️ not yet | Cast | ❌ | ✅ every song | Pair SmartCast on the web page (a PIN on the TV), for power and Home. |
+| **Amazon Fire TV** | ⚠️ not yet | the TV's Plex or Jellyfin app | ✅ | first song | Settings → My Fire TV → Developer options → **ADB debugging** on; allow the box when asked. |
+| **Apple TV** | ⚠️ not yet | AirPlay (paired once) | ✅ after pairing its remote | first song | Pair AirPlay and the remote on the web page (a PIN on the TV each). |
+
+- Netflix and YouTube open in whatever profile the TV used last; keep the TV on
+  the kids' profiles.
+- **Jellyfin in the TV's own app** (Roku, Fire TV, an LG not paired for
+  AirPlay): sign the app in as the same Jellyfin user as the box. Jellyfin on
+  a TV (its app, or over AirPlay) hasn't been tried on a real TV yet either,
+  even on a Roku or an LG; on the tablet it's tested.
+- Testing a new kind on the box: `sudo -u tablet-movies tablet-movies-bridge
+  --tv discover`, `--tv status`, `--tv pair <airplay|companion|remote|vizio>`,
+  then `--check`.
 
 ## Installing
 
@@ -180,7 +210,7 @@ stage is idempotent. A single stage runs with `sudo ./kids-os/setup/install.sh 3
 | 20 | Kid account, GDM login screen (timed login, kid pictures), the sky theme |
 | 30 | Waydroid with Google apps, ARM translation (libndk), hardware or software rendering |
 | 35 | Builds and installs the Android apps: Tablet Home (device owner), Movies & TV, Dance, Paint |
-| 36 | The bridge (Movies & TV, Dance, the web page, schedules), ffmpeg, yt-dlp, AirPlay |
+| 36 | The bridge (Movies & TV, Dance, the web page, schedules), ffmpeg, yt-dlp, AirPlay, Cast, adb |
 | 40 | The Cage kiosk session, touch panel fixes, sound at 100% |
 | 50 | Lockdown (no VT switching, no power menu for kids), boot splash |
 | 60 | The parent switch (corner taps), screen sleep |
@@ -221,8 +251,11 @@ home screen.
    - **Settings → Plex**: link (a code for plex.tv/link), then choose the kids'
      profile. **Settings → Jellyfin**: the server's address and the kids'
      Jellyfin user. (One or both; Movies & TV in parent mode can link Plex too.)
-   - **Settings → TV**: find and choose the TV. An LG needs Accept pressed on
-     the TV, then **Pair AirPlay** for Plex and Jellyfin.
+   - **Settings → TV**: find and choose the TV. An LG or a Samsung needs Accept
+     (Allow) pressed on the TV; then pair what the card offers (AirPlay for Plex
+     and Jellyfin on an LG, a Samsung or an Apple TV; the remote on a Google TV
+     or an Apple TV). See [TVs](#tvs).
+   - **Settings → Posters** (optional): a free TMDB key, an OMDb key, or both.
    - In **Lists**, add movies, shows, Netflix links, songs and coloring pages.
 5. **More kids**: open the **Users** app on the parent desktop. Each new kid
    starts with a copy of the first kid's Android.
@@ -263,8 +296,10 @@ MIT, see `LICENSE`.
 
 ## Not affiliated
 
-Not affiliated with or endorsed by Plex, Jellyfin, Netflix, YouTube, Roku, LG, Apple, PBS
-KIDS, Danny Go!, Crayola, TVmaze or Openclipart.
+Not affiliated with or endorsed by Plex, Jellyfin, Netflix, YouTube, Roku, LG, Samsung,
+Google, Vizio, Amazon, Apple, PBS KIDS, Danny Go!, Crayola, TVmaze, TMDB, OMDb or
+Openclipart. This product uses the TMDB API but is not endorsed or certified by
+TMDB.
 - **Nothing is downloaded** from YouTube or Netflix: titles play in the TV's own
   apps, or in YouTube Kids on the tablet.
 - **Plex** and **Jellyfin** streams come from your own server.

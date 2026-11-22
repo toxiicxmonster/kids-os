@@ -1212,6 +1212,7 @@ TMDB_API = "https://api.themoviedb.org/3"
 TMDB_IMAGES = "https://image.tmdb.org/t/p/w500"
 OMDB_API = "https://www.omdbapi.com/"
 POSTER_SOURCES = ("tmdb", "omdb")
+POSTER_NAMES = {"tmdb": "TMDB", "omdb": "OMDb"}
 
 
 def squash_title(s):
@@ -1316,16 +1317,16 @@ def set_poster_keys(cfg, change):
             continue
         key = str(key).strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]{6,400}", key):
-            raise ValueError(f"that doesn't look like a {source.upper()} key")
+            raise ValueError(f"that doesn't look like {POSTER_NAMES[source]}'s key")
         try:
             if source == "tmdb":
                 tmdb_json(key, "/configuration")
             elif omdb_json(key, {"t": "Bambi", "type": "movie"}).get("Error", "").startswith("Invalid API key"):
                 raise ValueError("OMDb didn't accept that key")
         except urllib.error.HTTPError as e:
-            raise ValueError(f"{source.upper()} didn't accept that key") from e
+            raise ValueError(f"{POSTER_NAMES[source]} didn't accept that key") from e
         except OSError as e:
-            raise ValueError(f"{source.upper()} can't be reached right now") from e
+            raise ValueError(f"{POSTER_NAMES[source]} can't be reached right now") from e
         keys[source] = key
     if keys:
         cfg["posters"] = keys
@@ -4206,7 +4207,7 @@ def firetv_shell(ip, command, timeout=15):
     if "unauthorized" in err:
         raise TVError("the TV hasn't allowed this box (choose it again and allow it on the TV)")
     if out.returncode:
-        raise TVError(err or "the TV didn't answer")
+        raise TVError(err or out.stdout.strip()[-300:] or "the TV didn't answer")
     return out.stdout
 
 
@@ -4228,8 +4229,12 @@ def firetv_pair(ip, wait=60):
 
 def firetv_launch(ip, package):
     for category in ("android.intent.category.LEANBACK_LAUNCHER", "android.intent.category.LAUNCHER"):
-        if "No activities found" not in firetv_shell(ip, f"monkey -p {package} -c {category} 1"):
-            return
+        try:  # (monkey fails, saying "no activities found", if the app has none in that category)
+            if "no activities found" not in firetv_shell(ip, f"monkey -p {package} -c {category} 1").lower():
+                return
+        except TVError as e:
+            if "no activities found" not in str(e).lower():
+                raise
     raise TVError(f"{package} isn't on the TV")
 
 
