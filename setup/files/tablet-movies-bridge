@@ -2051,7 +2051,7 @@ def kid_volume(percent=None):
     return None
 
 
-def power_request(action):
+def power_request(action, by="the web page"):
     """Restart or shut down the box (the web page): passed to the root helper
     tablet-power (via its .path unit), which lets a running update finish
     first. Returns its answer ("restarting", "shutting-down",
@@ -2060,7 +2060,7 @@ def power_request(action):
         raise ValueError("action must be restart or shutdown")
     request_id = secrets.token_hex(4)
     (STATE / "power-request").write_text(f"{request_id} {action}\n")
-    print(f"power: {action} requested from the web page", flush=True)
+    print(f"power: {action} requested from {by}", flush=True)
     end = time.time() + 5
     while time.time() < end:
         time.sleep(0.3)
@@ -2158,7 +2158,7 @@ def daily_restart_watch():
                 continue
             DAILY_RESTART_LAST.write_text(f"{int(time.time())} restarted\n")
             print("daily restart: restarting", flush=True)
-            power_request("restart")
+            power_request("restart", by="the daily restart")
             time.sleep(600)  # (it's going down)
         except Exception as e:  # keep watching
             print(f"daily restart: {e!r}", flush=True)

@@ -56,7 +56,12 @@ gitignored.)
   TV setup) and pairs AirPlay in two steps (start: `tablet-airplay pair`
   waits on stdin; then the PIN), Settings → Power restarts or
   shuts down the box via the root `tablet-power` (.path unit; a running
-  `tablet-update` finishes first). Minute-by-minute usage, history, TV
+  `tablet-update` finishes first), and has an optional daily restart
+  (`cfg["daily_restart"]`, off by default): at its time, once nothing is in
+  use (a kid on screen with the screen awake in tablet time, the parent on the
+  desktop, a stream fetched in the last 2 min), for up to 3 h, else not that
+  day; a box booted after that day's time counts as done
+  (`daily-restart-last`). Minute-by-minute usage, history, TV
   volumes and loudness live in their own files (config writes re-trigger the
   login-screen sync). Usage isn't counted while the screen sleeps
   (`tablet-parent-switch` keeps `/var/lib/tablet-movies/screen-dark`, "<idle
