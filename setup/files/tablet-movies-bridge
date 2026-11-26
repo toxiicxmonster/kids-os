@@ -74,6 +74,7 @@ Web portal for the parents' phones (home network only, PIN-protected):
   GET  /api/portal/history      what the kid played and opened; GET now, POST tv-stop
   GET  /api/portal/system       TV, Plex, last update, disk space, uptime
   POST /api/portal/power        {"action": "restart" | "shutdown"}, via tablet-power
+  GET/POST /api/portal/daily-restart  {"enabled", "time": "HH:MM"} (+ "last" when read)
   GET  /api/portal/dance        the Dance songs; POST/DELETE /api/portal/dance/<id>
   GET  /api/portal/dance-library?q=  Danny Go! songs; POST /api/portal/dance-link {"ref"}
   GET  /api/portal/week         the last 7 days: minutes per day, top shows and apps (?kid=)
@@ -2072,6 +2073,97 @@ def power_request(action):
     return "sent"
 
 
+DAILY_RESTART_DEFAULT = {"enabled": False, "time": "03:30"}
+DAILY_RESTART_LAST = STATE / "daily-restart-last"  # "<epoch> <result>": restarted, skipped-busy
+DAILY_RESTART_WINDOW = 3 * 3600  # while the box is in use, keep trying this long, then skip the day
+
+
+def daily_restart_of(cfg):
+    return {**DAILY_RESTART_DEFAULT, **cfg.get("daily_restart", {})}
+
+
+def daily_restart_status(cfg):
+    """The setting, when it next happens and how the last one went (web page)."""
+    out = daily_restart_of(cfg)
+    try:
+        at, result = DAILY_RESTART_LAST.read_text().split()[:2]
+        out["last"] = {"at": int(float(at)), "result": result}
+    except (OSError, ValueError):
+        out["last"] = None
+    return out
+
+
+def set_daily_restart(cfg, body):
+    setting = daily_restart_of(cfg)
+    if "enabled" in body:
+        setting["enabled"] = bool(body["enabled"])
+    if "time" in body:
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(body["time"])):
+            raise ValueError("the time looks like 03:30")
+        setting["time"] = body["time"]
+    cfg["daily_restart"] = setting
+    save(cfg)
+    return daily_restart_status(cfg)
+
+
+def box_in_use():
+    """Why a scheduled restart should wait (None if nobody would notice it)."""
+    now = time.time()
+    if any(now - s["at"] < 120 for s in list(streams.values())):
+        return "a video is streaming from the box"
+    if parent_on_desktop():
+        return "a parent is on the desktop"
+    kid = active_kid()
+    if kid and not screen_dark():
+        with lock:
+            if kid_allowed(load(), kid)[0]:
+                return f"{kid} is using the tablet"
+    return None
+
+
+def daily_restart_watch():
+    """The optional daily restart (web page Settings, Power): at the chosen
+    time, once nobody is using the box (a kid on screen with the screen
+    awake and tablet time allowed, a parent on the desktop, a video
+    streaming), for up to 3 hours, else not that day. A box that started
+    after today's time is already fresh."""
+    waiting = None  # the day whose restart is waiting on "in use"
+    while True:
+        time.sleep(60)
+        try:
+            with lock:
+                setting = daily_restart_of(load())
+            if not setting["enabled"]:
+                continue
+            now = datetime.datetime.now()
+            due = datetime.datetime.combine(now.date(), clock(setting["time"]))
+            if now < due:
+                due -= datetime.timedelta(days=1)  # (a window that runs past midnight)
+            with open("/proc/uptime") as f:
+                booted = time.time() - float(f.read().split()[0])
+            if booted >= due.timestamp():
+                continue  # already restarted (or started) since
+            late = (now - due).total_seconds()
+            busy = box_in_use()
+            if late > DAILY_RESTART_WINDOW:
+                if waiting == due:
+                    print(f"daily restart: skipped today, the box was in use ({busy or 'until now'})", flush=True)
+                    DAILY_RESTART_LAST.write_text(f"{int(time.time())} skipped-busy\n")
+                    waiting = None
+                continue
+            if busy:
+                if waiting != due:
+                    print(f"daily restart: waiting, {busy}", flush=True)
+                waiting = due
+                continue
+            DAILY_RESTART_LAST.write_text(f"{int(time.time())} restarted\n")
+            print("daily restart: restarting", flush=True)
+            power_request("restart")
+            time.sleep(600)  # (it's going down)
+        except Exception as e:  # keep watching
+            print(f"daily restart: {e!r}", flush=True)
+
+
 def android_fix(level, app, why):
     """An app found the kid's Android broken (Movies & TV: the video decoder
     hung). Passed to the root helper tablet-android-restart (via its .path
@@ -3060,6 +3152,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, {"count": len(cfg["dance"])})
         if authed and route == ("GET", "system"):
             return self.reply(200, system_status())
+        if authed and route == ("GET", "daily-restart"):
+            with lock:
+                return self.reply(200, daily_restart_status(load()))
+        if authed and route == ("POST", "daily-restart"):
+            with lock:
+                return self.reply(200, set_daily_restart(load(), self.body_json()))
         if authed and route == ("POST", "power"):
             return self.reply(200, {"result": power_request(self.body_json().get("action"))})
         if authed and route == ("GET", "now"):
@@ -4787,6 +4885,7 @@ def main():
     threading.Thread(target=count_usage, daemon=True).start()
     threading.Thread(target=coloring_starter, daemon=True).start()
     threading.Thread(target=netflix_warm, daemon=True).start()
+    threading.Thread(target=daily_restart_watch, daemon=True).start()
     server = http.server.ThreadingHTTPServer(LISTEN, Handler)
     print(f"listening on {LISTEN[0]}:{LISTEN[1]}", flush=True)
     server.serve_forever()

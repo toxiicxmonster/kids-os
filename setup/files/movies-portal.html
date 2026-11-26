@@ -458,6 +458,16 @@
         </div>
         <p class="msg" id="powerMsg">Restart fixes most problems and takes about a minute. After a shut down, it stays
           off until someone presses its power button.</p>
+        <div class="field">
+          <label for="rebootOn">Restart every day</label>
+          <div class="switch"><input type="checkbox" id="rebootOn"><span></span></div>
+        </div>
+        <div class="field" id="rebootField" hidden>
+          <label for="rebootTime">At</label>
+          <div class="controls"><input type="time" id="rebootTime" value="03:30"></div>
+        </div>
+        <p class="msg" id="rebootMsg">Optional: a fresh start each night keeps it running smoothly. If someone is using
+          the tablet then (or a video is playing from it), it waits until they stop, for up to 3 hours.</p>
       </section>
 
       <p style="text-align:center"><button id="logoutBtn" class="link">Sign out on this device</button></p>
@@ -555,7 +565,7 @@ function go(name) {
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
   window.scrollTo(0, 0);
   if (name === "activity") { loadWeek().catch(() => {}); loadHistory().catch(() => {}); }
-  if (name === "settings") { loadSchedule().catch(() => {}); loadSystem().catch(() => {}); loadTvSetup().catch(() => {}); loadJellyfin().catch(() => {}); loadPlex().catch(() => {}); loadPosters().catch(() => {}); }
+  if (name === "settings") { loadSchedule().catch(() => {}); loadSystem().catch(() => {}); loadDailyRestart().catch(() => {}); loadTvSetup().catch(() => {}); loadJellyfin().catch(() => {}); loadPlex().catch(() => {}); loadPosters().catch(() => {}); }
   if (name === "lists") showTab(currentTab);
 }
 document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => { e.preventDefault(); go(b.dataset.go); });
@@ -1241,6 +1251,26 @@ async function power(action) {
     offline(restart);
   });
 }
+async function loadDailyRestart() {
+  const r = await api("GET", "daily-restart");
+  $("rebootOn").checked = r.enabled;
+  $("rebootTime").value = r.time;
+  $("rebootField").hidden = !r.enabled;
+  const words = {restarted: "Last restarted by itself", "skipped-busy": "Last night it was in use the whole time, so it didn't restart"};
+  $("rebootMsg").textContent = "Optional: a fresh start each night keeps it running smoothly. If someone is using the tablet then "
+    + "(or a video is playing from it), it waits until they stop, for up to 3 hours."
+    + (r.last ? " " + (words[r.last.result] || r.last.result) + " · " + new Date(r.last.at * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"}) + "." : "");
+}
+async function saveDailyRestart() {
+  $("rebootField").hidden = !$("rebootOn").checked;
+  try {
+    await api("POST", "daily-restart", {enabled: $("rebootOn").checked, time: $("rebootTime").value || "03:30"});
+    toast($("rebootOn").checked ? "Restarts every day at " + clockText(new Date("2000-01-01T" + ($("rebootTime").value || "03:30")) / 1000) + " ✓" : "No daily restart ✓");
+  } catch (e) { oops(e); }
+  loadDailyRestart().catch(() => {});
+}
+$("rebootOn").addEventListener("change", saveDailyRestart);
+$("rebootTime").addEventListener("change", saveDailyRestart);
 $("restartBtn").onclick = () => power("restart");
 $("shutdownBtn").onclick = () => power("shutdown");
 
