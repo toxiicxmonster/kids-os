@@ -212,7 +212,13 @@ gitignored.)
 - **Netflix**: `launch/12?contentId=<id>&mediaType=series|movie`; it resumes, so
   the bridge rewinds (Rev x3, then Play as soon as `media-player` shows the
   position under 3 s or stopped near 0; ~position/5 is only the fallback
-  limit) when it starts >15 s in.
+  limit) when it starts >15 s in. A show plays a random episode (not last
+  time's) on every TV kind: the episode numbers are on the show's public title
+  page (`"__typename":"Episode","videoId":N`, near the end, which often arrives
+  cut off, so up to 3 reads; `netflix-episodes.json`, a week, read ahead at
+  start); the Roku gets `mediaType=episode`. An episode's `title/<id>` link
+  redirects to its show, so adding one keeps the show's number (Go Dog Go was
+  saved as S1E7 and always played it).
   Title, art and show/movie come from the public title page (og: tags; the
   TVSeries marker is ~2 MB in, read incrementally). That art is wide, and the
   title's own portrait boxshot isn't on its page, so shows get their poster
