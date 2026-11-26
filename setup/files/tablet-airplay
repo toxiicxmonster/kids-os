@@ -44,7 +44,8 @@ from pyatv.support.http import decode_bplist_from_body
 REMOTE_CONTROL_STREAM = 130
 VIDEO_CONTROL = 1
 CLIENT_TYPE_UUID = "A6B27562-B43A-4F2D-B75F-82391E250194"
-STARTUP_SECONDS = 60  # no "playing" by then: give up
+STARTUP_SECONDS = 90  # no "playing" this long after launch: give up
+LAUNCHED = None  # loop time at launch
 NO_TIME = {"flags": 0, "value": 0, "epoch": 0, "timescale": 0}
 
 reports: asyncio.Queue = asyncio.Queue()
@@ -53,6 +54,15 @@ device_id = ""
 
 def say(**fields):
     print(json.dumps(fields), flush=True)
+
+
+def step(text):
+    """Progress for the journal (stderr): where a start that never plays got to."""
+    try:
+        elapsed = f"{asyncio.get_running_loop().time() - LAUNCHED:5.1f}s" if LAUNCHED is not None else ""
+    except RuntimeError:
+        elapsed = ""
+    print(f"tablet-airplay {elapsed} {text}", file=sys.stderr, flush=True)
 
 
 def seconds(t):
@@ -85,12 +95,15 @@ if MODE == "v2":
 async def play_url(self, timing_server_port, url, position=0.0):
     """AirPlayV2.play_url for video-v2-only receivers."""
     await self._setup_base(timing_server_port)
+    step("set up")
     await self.start_feedback()
     await self.rtsp.record()
+    step("recording")
     resp = decode_bplist_from_body(await self.rtsp.setup(body={"streams": [{
         "type": REMOTE_CONTROL_STREAM, "controlType": VIDEO_CONTROL, "channelID": f"{device_id}-RCS-2",
         "clientUUID": str(uuid.uuid4()).upper(), "clientTypeUUID": CLIENT_TYPE_UUID}]}))
     stream_id = str(resp["streams"][0]["streamID"])
+    step("remote-control stream set up")
 
     async def command(body):
         return await self.rtsp.exchange("POST", uri="/command", headers={"X-Apple-StreamID": stream_id},
@@ -106,15 +119,18 @@ async def play_url(self, timing_server_port, url, position=0.0):
     if not hls or position > 0:
         item["Start-Position"] = {"flags": 1, "value": int(position * 1e9), "epoch": 0, "timescale": 10**9}
     await command({"type": "insertPlayQueueItem", "item": item})
+    step("queued the video")
     await command({"type": "setProperty", "property": "actionAtItemEnd", "value": 1})  # pause at the end
-    return await command({"type": "setRate", "rate": 1.0})
+    answer = await command({"type": "setRate", "rate": 1.0})
+    step("asked it to play")
+    return answer
 
 
 async def wait_for_end(self):
     """AirPlayPlayer._wait_for_media_to_end: follow the TV's reports."""
     loop = asyncio.get_running_loop()
-    started, last = False, None
-    deadline = loop.time() + STARTUP_SECONDS
+    started, last, seen = False, None, set()
+    deadline = (LAUNCHED if LAUNCHED is not None else loop.time()) + STARTUP_SECONDS
     while self.rtsp.connection.transport is not None:
         if not started and loop.time() > deadline:
             say(end="failed", reason="never started")
@@ -124,6 +140,9 @@ async def wait_for_end(self):
         except asyncio.TimeoutError:
             continue
         kind, name = report.get("type"), report.get("name")
+        if (kind, name) not in seen:  # each kind of report once, for the journal
+            seen.add((kind, name))
+            step(f"TV reported {kind}/{name}: {str(report.get('params', ''))[:150]}")
         if kind == "notification" and name == "itemPlayedToEnd":
             say(end="played")
             return
@@ -193,10 +212,14 @@ async def play(ip, url):
     credentials = os.environ.get("TABLET_AIRPLAY_CREDENTIALS")
     if not credentials:
         raise SystemExit("TABLET_AIRPLAY_CREDENTIALS isn't set")
+    global LAUNCHED
+    LAUNCHED = asyncio.get_running_loop().time()
     conf = await find(ip)
+    step("found the TV")
     device_id = conf.get_service(Protocol.AirPlay).properties.get("deviceid", "")
     conf.set_credentials(Protocol.AirPlay, credentials)
     atv = await pyatv.connect(conf, asyncio.get_running_loop())
+    step("connected")
     task = asyncio.current_task()
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
     try:

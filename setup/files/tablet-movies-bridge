@@ -397,6 +397,27 @@ def tv_stream_request(method, path, client):
 
 
 def stream_get(cfg, sid, rest, query=""):
+    """(body, content type) of one HLS request. A TV's playlists and its first
+    few segments go in the journal, with how long each took (AirPlay starts
+    that never play: did the TV fetch the video, and how fast?)."""
+    stream = streams.get(sid)
+    if not stream or not stream.get("client"):
+        return stream_fetch(cfg, sid, rest, query)
+    began = time.time()
+    count = "segments" if rest.endswith(".ts") else "playlists"
+    stream[count] = stream.get(count, 0) + 1
+    note = stream[count] <= (3 if count == "segments" else 5)
+    try:
+        body, ctype = stream_fetch(cfg, sid, rest, query)
+    except Exception as e:
+        print(f"TV stream: {rest.rsplit('/', 1)[-1]} failed after {time.time() - began:.1f} s: {e!r}", flush=True)
+        raise
+    if note:
+        print(f"TV stream: {rest.rsplit('/', 1)[-1]} ({len(body) // 1024} KB) in {time.time() - began:.1f} s", flush=True)
+    return body, ctype
+
+
+def stream_fetch(cfg, sid, rest, query=""):
     """(body, content type) of one HLS request, passed on to the Plex transcoder
     (or Jellyfin's)."""
     stream = streams.get(sid)
@@ -3969,7 +3990,7 @@ def airplay_stop():
 def airplay_follow(cfg, proc, sid, started):
     """Reads the helper's reports until it ends, then stops the transcode; at
     the end of a show's episode, the next one follows."""
-    ended, position, duration = None, 0, 0
+    ended, position, duration, last_state = None, 0, 0, None
     for line in proc.stdout:
         try:
             report = json.loads(line)
@@ -3980,6 +4001,9 @@ def airplay_follow(cfg, proc, sid, started):
                 airplay_now.update({k: report[k] for k in ("state", "position", "duration") if k in report})
         position = report.get("position") or position
         duration = report.get("duration") or duration
+        if report.get("state") and report["state"] != last_state:
+            last_state = report["state"]
+            print(f"AirPlay: {last_state}" + (f" at {report['position']} s" if report.get("position") else ""), flush=True)
         if report.get("state") == "playing":
             started.set()
         if "end" in report:
@@ -4044,7 +4068,7 @@ def airplay_start(cfg, item, key, tv, episode=None):
                            episode=play_key, generation=generation,
                            kid=cfg.kid if isinstance(cfg, KidView) else None)
     threading.Thread(target=airplay_follow, args=(cfg, proc, sid, started), daemon=True).start()
-    started.wait(60)
+    started.wait(100)  # (the helper itself gives up 90 s after it starts)
     with airplay_lock:
         playing = airplay_now.get("proc") is proc and airplay_now.get("state") == "playing"
     if not playing:
