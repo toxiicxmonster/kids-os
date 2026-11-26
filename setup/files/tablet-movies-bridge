@@ -678,32 +678,35 @@ def netflix_id(ref):
     return found[1]
 
 
-def netflix_page(nid):
-    """The title's public netflix.com page, read only as far as its show/movie
-    marker (the pages are a couple of MB and the end sometimes arrives cut off)."""
+def netflix_page(nid, full=False):
+    """The title's public netflix.com page and the title number it ended up at
+    (an episode's link redirects to its show). Read only as far as the
+    show/movie marker, unless full (the episode list comes after it); the
+    pages are a couple of MB and the end sometimes arrives cut off."""
     req = urllib.request.Request(f"https://www.netflix.com/title/{nid}",
                                  headers={"User-Agent": UA, "Accept-Language": "en-US"})
-    page = b""
+    page, final = b"", nid
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
-            while len(page) < 8_000_000 and not re.search(rb'"@type":"(TVSeries|Movie)"', page[-300_000:]):
+            final = (re.search(r"/title/(\d+)", r.geturl()) or [None, nid])[1]
+            while len(page) < 8_000_000 and (full or not re.search(rb'"@type":"(TVSeries|Movie)"', page[-300_000:])):
                 chunk = r.read(65536)
                 if not chunk:
                     break
                 page += chunk
     except urllib.error.HTTPError:
-        return ""
+        return "", nid
     except http.client.IncompleteRead as e:
         page += e.partial
-    return page.decode(errors="replace")
+    return page.decode(errors="replace"), final
 
 
 def add_netflix(cfg, ref):
-    """Look the title up on its public netflix.com page and put it on the list."""
-    nid = netflix_id(ref)
+    """Look the title up on its public netflix.com page and put it on the list
+    (an episode's link puts its whole show on the list)."""
+    page, nid = netflix_page(netflix_id(ref))
     key = f"nf{nid}"
     if not any(m["key"] == key for m in cfg["movies"]):
-        page = netflix_page(nid)
         meta = lambda prop: html.unescape((re.search(f'property="og:{prop}" content="([^"]*)"', page) or [None, ""])[1])
         title = re.sub(r"^Watch\s+|\s*\|\s*Netflix.*$", "", meta("title")).strip()
         if not title:
@@ -712,7 +715,72 @@ def add_netflix(cfg, ref):
                               "netflix_type": "series" if '"@type":"TVSeries"' in page else "movie"})
         cfg["movies"].sort(key=lambda m: m["title"].lower())
         save(cfg)
+        if '"@type":"TVSeries"' in page:
+            threading.Thread(target=netflix_episodes, args=(nid,), daemon=True).start()
     return key
+
+
+NETFLIX_EPISODES = STATE / "netflix-episodes.json"  # title number -> {"at", "episodes"}
+netflix_episodes_lock = threading.Lock()
+
+
+def netflix_episodes(nid):
+    """A Netflix show's episode numbers, from its public title page (every
+    season, though a long season lists only its first episodes there).
+    Cached a week; an old list is used if the page can't be read."""
+    with netflix_episodes_lock:
+        known = read_side(NETFLIX_EPISODES)
+        entry = known.get(nid)
+        if entry and time.time() - entry["at"] < 7 * 86400:
+            return entry["episodes"]
+        episodes = []
+        for _ in range(3):  # the list is near the end, which often arrives cut off
+            try:
+                page, _ = netflix_page(nid, full=True)
+            except OSError as e:
+                print(f"Netflix episodes of {nid}: {e!r}", flush=True)
+                continue
+            found = list(dict.fromkeys(re.findall(r'"__typename":"Episode","videoId":(\d+)', page)))
+            if len(found) > len(episodes):
+                episodes = found
+            if "</html>" in page:
+                break
+        if not episodes:
+            return entry["episodes"] if entry else []
+        known[nid] = {"at": time.time(), "episodes": episodes}
+        write_side(NETFLIX_EPISODES, known)
+        return episodes
+
+
+def netflix_warm():
+    """Read every listed Netflix show's episodes ahead of the first pick (each
+    page takes a few seconds), at start and then daily."""
+    while True:
+        try:
+            cfg = load()
+            lists = [cfg.get("movies", [])] + [k.get("movies", []) for k in cfg.get("kids", {}).values()]
+            for nid in dict.fromkeys(m["key"][2:] for lst in lists for m in lst
+                                     if m.get("kind") == "netflix" and m.get("netflix_type") == "series"):
+                netflix_episodes(nid)
+        except Exception as e:
+            print(f"Netflix episodes: {e!r}", flush=True)
+        time.sleep(86400)
+
+
+def netflix_pick(item, key):
+    """What to start for a Netflix pick: (title number, Roku mediaType). A
+    show plays a random episode (not the one from last time), like a Plex
+    show; a movie, or a show whose episodes can't be read, is the title."""
+    nid, media = key[2:], item.get("netflix_type", "series")
+    if media != "series":
+        return nid, media
+    episodes = netflix_episodes(nid)
+    if not episodes:
+        return nid, media
+    choices = [e for e in episodes if e != last_episode.get(key)] or episodes
+    episode = random.choice(choices)
+    last_episode[key] = episode
+    return episode, "episode"
 
 
 def remove_item(cfg, key):
@@ -2051,7 +2119,8 @@ def start(cfg, key):
 
     if item.get("kind") == "netflix":
         # Opens Netflix straight to the title, from anywhere (even another app).
-        q = urllib.parse.urlencode({"contentId": key[2:], "mediaType": item.get("netflix_type", "series")})
+        nid, media = netflix_pick(item, key)
+        q = urllib.parse.urlencode({"contentId": nid, "mediaType": media})
         try:
             fetch(f"http://{tv['ip']}:8060/launch/{NETFLIX_ROKU_APP}?{q}", "POST", timeout=10)
         except urllib.error.HTTPError:
@@ -2225,7 +2294,7 @@ def read_side(path):
     try:
         return json.loads(path.read_text())
     except (FileNotFoundError, ValueError):
-        return {} if path in (USAGE, LOUDNESS, TV_LEVELS) else []
+        return {} if path in (USAGE, LOUDNESS, TV_LEVELS, NETFLIX_EPISODES) else []
 
 
 def write_side(path, data):
@@ -3597,7 +3666,7 @@ def lg_start(cfg, item, key, tv):
     if item.get("kind") == "netflix":
         try:
             with lg_session(tv) as s:
-                s.launch(LG_NETFLIX_APP, content_id=f"m=https://www.netflix.com/watch/{key[2:]}&source_type=4")
+                s.launch(LG_NETFLIX_APP, content_id=f"m=https://www.netflix.com/watch/{netflix_pick(item, key)[0]}&source_type=4")
         except LGError as e:
             print(f"LG Netflix: {e}", flush=True)
             return {"result": "error", "message": "Netflix isn't on the TV."}
@@ -4546,7 +4615,7 @@ def other_start(cfg, item, key, tv):
     kind = tv["kind"]
     if item.get("kind") == "netflix":
         try:
-            other_netflix(tv, key[2:])
+            other_netflix(tv, netflix_pick(item, key)[0])
         except TVError as e:
             print(f"{TV_LABELS[kind]} Netflix: {e}", flush=True)
             return {"result": "error", "message": f"Netflix didn't start: {e}."}
@@ -4717,6 +4786,7 @@ def main():
     threading.Thread(target=seed_dance, daemon=True).start()
     threading.Thread(target=count_usage, daemon=True).start()
     threading.Thread(target=coloring_starter, daemon=True).start()
+    threading.Thread(target=netflix_warm, daemon=True).start()
     server = http.server.ThreadingHTTPServer(LISTEN, Handler)
     print(f"listening on {LISTEN[0]}:{LISTEN[1]}", flush=True)
     server.serve_forever()
