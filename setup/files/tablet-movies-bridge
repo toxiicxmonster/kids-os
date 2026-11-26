@@ -454,12 +454,22 @@ def stream_fetch(cfg, sid, rest, query=""):
         stream["started"] = True
         # The server only starts a stream it has first been asked to decide on
         # (without this, start.m3u8 is a bare 400).
-        fetch(base + "decision?" + qs, headers={"Accept": "application/json"}, timeout=30)
+        decision = fetch(base + "decision?" + qs, headers={"Accept": "application/json"}, timeout=30)
         url = base + "start.m3u8?" + qs
     else:
         url = base + rest
     data = fetch(url, headers=headers, timeout=60, raw=True)
     stream["at"] = time.time()
+    if rest == "start.m3u8" and not data.strip():
+        # The transcoder said nothing: its decision says why (a file it can't
+        # read, the transcoder failing, no room for its temp files...).
+        try:
+            mc = json.loads(decision).get("MediaContainer", {})
+        except (ValueError, AttributeError):
+            mc = {"raw": str(decision)[:300]}
+        why = {k: v for k, v in mc.items() if "Decision" in k or k in ("mdeDecision", "raw")}
+        print(f"Plex gave an empty playlist for {stream['key']}: {json.dumps(why)[:400]}", flush=True)
+        raise RuntimeError("Plex's transcoder didn't start the video")
     if rest.endswith(".ts"):
         meter_feed(stream, data)
     if rest.endswith(".m3u8"):
