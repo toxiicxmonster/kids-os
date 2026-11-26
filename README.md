@@ -34,8 +34,10 @@ lands straight in their own Android; nothing else on the PC is reachable.
   - Movies and shows come from **Plex** or **Jellyfin** (or both). They always
     start from the beginning, and shows go on to the next episode. On an LG,
     they play over AirPlay.
-  - Netflix titles open by deep link, and are rewound to the start on a Roku if
-    Netflix resumes partway in.
+  - Netflix titles open by deep link. A Netflix show plays a random episode
+    each time (never the same one twice in a row), and on a Roku a title that
+    resumes partway in is rewound to the start. Long seasons list only their
+    first episodes on Netflix's public page, so later ones don't come up.
   - The kid's **favorites** (picked twice or more in the last month) come first.
   - Netflix titles get proper portrait posters: from **TMDB** or **OMDb** if you
     add a free key on the web page, otherwise TVmaze for shows.
@@ -110,7 +112,9 @@ lands straight in their own Android; nothing else on the PC is reachable.
       its remote) with the code it shows.
     - A health card: TV, Plex or Jellyfin, last update, disk, and the last
       automatic fix.
-    - **Restart / shut down** the box.
+    - **Restart / shut down** the box, and an optional **daily restart** at a
+      time you pick. If the box is in use then (a kid on the tablet, a video
+      playing from it), it waits up to 3 hours, or skips that day.
 - **Parent desktop** (GNOME, password-protected):
   - "Kid Tablet (parent mode)" to install and approve apps in a kid's Android.
   - A **Users** app: names, themes, add or remove kids, the parent password.
