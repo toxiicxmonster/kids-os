@@ -41,8 +41,33 @@ StandardOutput=journal
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# "Check for updates" on the parents' web page: the bridge drops a request
+# (in its own state folder, from stage 36) and this runs tablet-update as root.
+install -m 755 "$TABLET_DIR/files/tablet-update-request" /usr/local/sbin/tablet-update-request
+cat > /etc/systemd/system/tablet-update-request.path <<'EOF'
+[Unit]
+Description=Kids OS "check for updates" requests from the web portal
+
+[Path]
+PathChanged=/var/lib/tablet-movies/update-request
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cat > /etc/systemd/system/tablet-update-request.service <<'EOF'
+[Unit]
+Description=Kids OS update check from the web portal
+
+[Service]
+Type=oneshot
+TimeoutStartSec=50min
+ExecStart=/usr/local/sbin/tablet-update-request --request
+EOF
+
 systemctl daemon-reload
 systemctl enable tablet-update.service
+systemctl enable --now tablet-update-request.path
 
 echo "Updates follow branch '$BRANCH' of $REPO. Read-only deploy key for GitHub:"
 cat /etc/tablet-os/deploy_key.pub

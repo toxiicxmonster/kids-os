@@ -448,6 +448,9 @@
       <section class="card">
         <h2>🩺 How it's doing</h2>
         <dl class="facts" id="system"><dt>Checking…</dt><dd></dd></dl>
+        <div class="buttons"><button id="updateBtn">⬇️ Check for updates</button></div>
+        <p class="msg" id="updateMsg">It checks by itself every time it starts. Updating can take a few minutes; the
+          tablet keeps working meanwhile.</p>
       </section>
 
       <section class="card">
@@ -1232,6 +1235,33 @@ async function loadSystem() {
   add("Running for", r.uptime_hours < 48 ? r.uptime_hours + " hours" : Math.round(r.uptime_hours / 24) + " days", true);
   $("system").replaceChildren(...facts.flatMap(([label, text, good]) => [el("dt", "", label), el("dd", good ? "" : "bad", text)]));
 }
+
+// ---- settings: check for updates -----------------------------------------------------------------
+const UPDATE_WORDS = {"up-to-date": "Already up to date ✓", "updated": "Updated ✓",
+  "stage-failed": "An update step failed. It tries again by itself next time.",
+  "offline": "Couldn't reach GitHub. Is the internet working?", "failed": "The update check didn't run."};
+async function checkUpdates() {
+  const btn = $("updateBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ Checking…";
+  $("updateMsg").textContent = "Checking for updates. If there is one, it can take a few minutes (this page may blink while it updates).";
+  try {
+    const {id} = await api("POST", "update");
+    const end = Date.now() + 50 * 60 * 1000;
+    let status = null;
+    while (Date.now() < end) {
+      await new Promise((r) => setTimeout(r, 3000));
+      try { status = (await api("GET", "update")).status; } catch (e) { continue; }  // (the bridge may restart mid-update)
+      if (status && status.id === id && status.state !== "checking") break;
+    }
+    const word = status && status.id === id ? (UPDATE_WORDS[status.state] || status.state) : "Still working on it. Check back later.";
+    $("updateMsg").textContent = word;
+    toast(word, !status || !["up-to-date", "updated"].includes(status.state));
+    loadSystem().catch(() => {});
+  } catch (e) { oops(e); }
+  finally { btn.disabled = false; btn.textContent = "⬇️ Check for updates"; }
+}
+$("updateBtn").onclick = checkUpdates;
 
 // ---- settings: power ---------------------------------------------------------------------------
 async function power(action) {

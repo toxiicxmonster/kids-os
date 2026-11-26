@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# "Check for updates" on the parents' web page. The bridge has no privileges:
+# it writes "<id>" to REQUEST, and tablet-update-request.path runs this as
+# root. It runs tablet-update (which waits for one that's already running)
+# and answers in STATUS ("<id> <epoch> <state>": checking, then the update's
+# own result: up-to-date, updated, stage-failed, offline), which the bridge
+# reads for the page. The update may restart the bridge itself; the status
+# file outlives that.
+#
+#   tablet-update-request --request   (tablet-update-request.path)
+set -uo pipefail
+
+STATE=/var/lib/tablet-movies
+REQUEST=$STATE/update-request
+STATUS=$STATE/update-status
+LAST=/var/lib/tablet-os/last-update
+
+report() {  # <id> <state>
+  echo "tablet-update-request: $2"
+  printf '%s %s %s\n' "$1" "$(date +%s)" "$2" > "$STATUS.tmp"
+  chown tablet-movies:tablet-movies "$STATUS.tmp"
+  mv "$STATUS.tmp" "$STATUS"
+}
+
+[[ ${1:-} == --request ]] || { echo "usage: tablet-update-request --request" >&2; exit 2; }
+IFS= read -r id _ < "$REQUEST" || exit 0
+[[ $id =~ ^[0-9a-f]{8}$ ]] || exit 0
+
+report "$id" checking
+/usr/local/sbin/tablet-update
+result=failed
+read -r _ _ result < "$LAST" 2>/dev/null || result=failed
+report "$id" "${result:-failed}"

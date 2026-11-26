@@ -74,6 +74,7 @@ Web portal for the parents' phones (home network only, PIN-protected):
   GET  /api/portal/history      what the kid played and opened; GET now, POST tv-stop
   GET  /api/portal/system       TV, Plex, last update, disk space, uptime
   POST /api/portal/power        {"action": "restart" | "shutdown"}, via tablet-power
+  POST /api/portal/update       check for updates now (tablet-update-request); GET: {"status": {"id", "at", "state"}}
   GET/POST /api/portal/daily-restart  {"enabled", "time": "HH:MM"} (+ "last" when read)
   GET  /api/portal/dance        the Dance songs; POST/DELETE /api/portal/dance/<id>
   GET  /api/portal/dance-library?q=  Danny Go! songs; POST /api/portal/dance-link {"ref"}
@@ -2104,6 +2105,29 @@ def power_request(action, by="the web page"):
     return "sent"
 
 
+UPDATE_REQUEST, UPDATE_STATUS = STATE / "update-request", STATE / "update-status"
+
+
+def update_request():
+    """Check for updates now (the web page): passed to the root helper
+    tablet-update-request (via its .path unit), which runs tablet-update.
+    Returns the request id; update_status says how it's going."""
+    request_id = secrets.token_hex(4)
+    UPDATE_REQUEST.write_text(f"{request_id}\n")
+    print("update: check requested from the web page", flush=True)
+    return request_id
+
+
+def update_status():
+    """{"id", "at", "state"} of the last check from the web page (state:
+    checking, up-to-date, updated, stage-failed, offline, failed), or None."""
+    try:
+        request_id, at, state = UPDATE_STATUS.read_text().split()[:3]
+        return {"id": request_id, "at": int(at), "state": state}
+    except (OSError, ValueError):
+        return None
+
+
 DAILY_RESTART_DEFAULT = {"enabled": False, "time": "03:30"}
 DAILY_RESTART_LAST = STATE / "daily-restart-last"  # "<epoch> <result>": restarted, skipped-busy
 DAILY_RESTART_WINDOW = 3 * 3600  # while the box is in use, keep trying this long, then skip the day
@@ -3183,6 +3207,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, {"count": len(cfg["dance"])})
         if authed and route == ("GET", "system"):
             return self.reply(200, system_status())
+        if authed and route == ("POST", "update"):
+            return self.reply(200, {"id": update_request()})
+        if authed and route == ("GET", "update"):
+            return self.reply(200, {"status": update_status()})
         if authed and route == ("GET", "daily-restart"):
             with lock:
                 return self.reply(200, daily_restart_status(load()))
