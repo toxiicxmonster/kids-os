@@ -293,6 +293,9 @@ gitignored.)
     Unpaired, the old Plex-app route is the fallback. Roku is unchanged.
     A TV's stream asks as "Plex for Android": as Plex Web the transcoder
     gives HLS MP3 audio (whatever the profile extra says), silent on the LG.
+    And with `directStream=0`: direct stream passed some files' own video
+    through (Toy Story 5, 1924x1040, 2026-11-26), which the LG took and then
+    reported an error without fetching a segment.
     The LG ignores pyatv's unicast `hosts=` scan; scan the network.
   - The LG is AirPlay video v2 only: `POST /play` is a 404. What works (as
     macOS does it, cf. pyatv PR #2941): a second SETUP for a remote-control

@@ -418,8 +418,8 @@ def stream_get(cfg, sid, rest, query=""):
     if count == "playlists" and stream[count] <= 2:
         # What the TV was handed (tokens are already off it), for a TV that
         # takes the playlist and then reports an error without asking for more.
-        text = body.decode("utf-8", "replace").strip()
-        print("TV stream playlist:\n  " + text[:1500].replace("\n", "\n  "), flush=True)
+        lines = body.decode("utf-8", "replace").strip().splitlines()
+        print("TV stream playlist:\n  " + "\n  ".join(line[:200] for line in lines[:6]), flush=True)
     return body, ctype
 
 
@@ -450,6 +450,10 @@ def stream_fetch(cfg, sid, rest, query=""):
             # For a TV (AirPlay): Plex's web profile makes HLS audio MP3, which the
             # LG plays silent; as Plex for Android it's AAC stereo.
             q.update({"X-Plex-Product": "Plex for Android", "X-Plex-Platform": "Android"})
+            # And always a real transcode: with direct stream, a file's own
+            # video was passed through (Toy Story 5: 1924x1040), which the LG
+            # took and then refused without fetching a segment.
+            q["directStream"] = 0
         qs = urllib.parse.urlencode(q)
         if stream.get("started"):
             # The player starting over (after a decoder fix): a fresh transcode, from the start.
