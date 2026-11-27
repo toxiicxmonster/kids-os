@@ -414,7 +414,12 @@ def stream_get(cfg, sid, rest, query=""):
         print(f"TV stream: {rest.rsplit('/', 1)[-1]} failed after {time.time() - began:.1f} s: {e!r}", flush=True)
         raise
     if note:
-        print(f"TV stream: {rest.rsplit('/', 1)[-1]} ({len(body) // 1024} KB) in {time.time() - began:.1f} s", flush=True)
+        print(f"TV stream: {rest.rsplit('/', 1)[-1]} ({len(body)} bytes) in {time.time() - began:.1f} s", flush=True)
+    if count == "playlists" and stream[count] <= 2:
+        # What the TV was handed (tokens are already off it), for a TV that
+        # takes the playlist and then reports an error without asking for more.
+        text = body.decode("utf-8", "replace").strip()
+        print("TV stream playlist:\n  " + text[:1500].replace("\n", "\n  "), flush=True)
     return body, ctype
 
 
